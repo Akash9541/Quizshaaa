@@ -204,7 +204,7 @@ quizHistorySchema.pre('save', function(next) {
 const QuizHistory = mongoose.model("QuizHistory", quizHistorySchema);
 
 // 8. SendGrid Email Setup
-const transporter = nodemailer.createTransporter({
+const transporter = nodemailer.createTransport({
   host: "smtp.sendgrid.net",
   port: 587,
   auth: {
