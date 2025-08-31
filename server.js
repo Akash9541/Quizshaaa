@@ -8,12 +8,9 @@ import jwt from 'jsonwebtoken';
 import cors from 'cors';
 import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
-import passport from 'passport';
 import session from 'express-session';
-import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
-import { Strategy as GitHubStrategy } from 'passport-github2';
 import nodemailer from 'nodemailer';
-import sgMail from '@sendgrid/mail'; // Added SendGrid import
+import sgMail from '@sendgrid/mail';
 
 // 2. Load Environment Variables
 dotenv.config();
@@ -41,14 +38,12 @@ const loginLimiter = rateLimit({
   message: { error: 'Too many login attempts, please try again later.' } 
 });
 
-// 5. Passport.js Session Management
+// 5. Session Management (keeping for potential future use)
 app.use(session({ 
   secret: process.env.SESSION_SECRET, 
   resave: false, 
   saveUninitialized: true 
 }));
-app.use(passport.initialize());
-app.use(passport.session());
 
 // 6. Connect to MongoDB
 mongoose.connect(process.env.MONGODB_URI || process.env.MONGO_URI);
@@ -56,7 +51,7 @@ const db = mongoose.connection;
 db.on('error', console.error.bind(console, 'Connection error:'));
 db.once('open', () => console.log('✅ Connected to MongoDB'));
 
-// 7. Mongoose User Schema
+// 7. Mongoose User Schema (cleaned up - removed OAuth fields)
 const userSchema = new mongoose.Schema({
   email: { 
     type: String, 
@@ -68,7 +63,8 @@ const userSchema = new mongoose.Schema({
   },
   password: { 
     type: String, 
-    minlength: 6 
+    minlength: 6,
+    required: true
   },
   name: { 
     type: String, 
@@ -85,21 +81,6 @@ const userSchema = new mongoose.Schema({
   },
   lockUntil: Date,
   refreshToken: String,
-  googleId: { 
-    type: String, 
-    unique: true, 
-    sparse: true 
-  },
-  githubId: { 
-    type: String, 
-    unique: true, 
-    sparse: true 
-  },
-  provider: { 
-    type: String, 
-    enum: ['local', 'google', 'github'], 
-    default: 'local' 
-  },
   otp: {
     type: String,
     default: null
@@ -167,7 +148,7 @@ userSchema.methods.generateTokens = function() {
 
 const User = mongoose.model('User', userSchema);
 
-// ------------------ QUIZ HISTORY SCHEMA (UPDATED) ------------------
+// Quiz History Schema
 const quizHistorySchema = new mongoose.Schema({
   userId: { 
     type: mongoose.Schema.Types.ObjectId, 
@@ -221,15 +202,14 @@ quizHistorySchema.pre('save', function(next) {
 });
 
 const QuizHistory = mongoose.model("QuizHistory", quizHistorySchema);
-// -------------------------------------------------------------------
 
-// 8. SendGrid Email Transporter
-const transporter = nodemailer.createTransport({
+// 8. SendGrid Email Setup
+const transporter = nodemailer.createTransporter({
   host: "smtp.sendgrid.net",
   port: 587,
   auth: {
-    user: "apikey", // fixed value
-    pass: process.env.SENDGRID_API_KEY, // stored in .env file
+    user: "apikey",
+    pass: process.env.SENDGRID_API_KEY,
   },
 });
 
@@ -239,7 +219,7 @@ sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 // Email sending function
 const sendEmail = async (to, subject, html) => {
   const mailOptions = {
-    from: process.env.EMAIL_FROM || "quizzhaala@example.com", // Should be a verified sender in SendGrid
+    from: process.env.EMAIL_FROM || "quizzhaala@example.com",
     to,
     subject,
     html,
@@ -258,7 +238,7 @@ const sendEmail = async (to, subject, html) => {
 // OTP Email function
 const sendOtpEmail = async (email, name) => {
   const otp = Math.floor(100000 + Math.random() * 900000).toString();
-  const otpExpires = new Date(Date.now() + 10 * 60 * 1000); // OTP expires in 10 minutes
+  const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
   
   // Update user with new OTP
   await User.findOneAndUpdate(
@@ -293,111 +273,7 @@ const sendOtpEmail = async (email, name) => {
   }
 };
 
-// 9. Passport.js Strategies
-passport.serializeUser((user, done) => {
-  done(null, user.id);
-});
-
-passport.deserializeUser(async (id, done) => {
-  try {
-    const user = await User.findById(id);
-    done(null, user);
-  } catch (err) {
-    done(err, null);
-  }
-});
-
-// Google Strategy (Single implementation - no duplicates)
-passport.use(new GoogleStrategy({
-    clientID: process.env.GOOGLE_CLIENT_ID,
-    clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-    callbackURL: `${process.env.BACKEND_URL}/auth/google/callback`
-  },
-  async (accessToken, refreshToken, profile, done) => {
-    try {
-      let user = await User.findOne({ googleId: profile.id });
-      if (user) {
-      if (!user.isVerified) {
-        await sendOtpEmail(user.email, user.name); // resend OTP if not verified
-      }
-      return done(null, user);
-      } else {
-        user = await User.findOne({ email: profile.emails[0].value });
-        if (user) {
-          user.googleId = profile.id;
-          user.isVerified = false; // OTP required
-          user.provider = 'google';
-          await user.save();
-        } else {
-          user = new User({
-            googleId: profile.id,
-            name: profile.displayName,
-            email: profile.emails[0].value,
-            isVerified: false, // OTP required
-            provider: 'google',
-            password: 'temp-password'
-          });
-          await user.save();
-        }
-
-        // Send OTP via SendGrid
-        await sendOtpEmail(user.email, user.name);
-
-        return done(null, user);
-      }
-    } catch (err) {
-      return done(err, null);
-    }
-  }
-));
-
-// GitHub Strategy (Fixed to require OTP verification)
-passport.use(new GitHubStrategy({
-    clientID: process.env.GITHUB_CLIENT_ID,
-    clientSecret: process.env.GITHUB_CLIENT_SECRET,
-    callbackURL: `${process.env.BACKEND_URL}/auth/github/callback`,
-    scope: ['user:email']
-  },
-  async (accessToken, refreshToken, profile, done) => {
-    try {
-      let user = await User.findOne({ githubId: profile.id });
-        if (user) {
-        if (!user.isVerified) {
-       await sendOtpEmail(user.email, user.name); // resend OTP if not verified
-      }
-      return done(null, user);
-      } else {
-        const email = profile.emails && profile.emails.length > 0 ? profile.emails[0].value : null;
-        user = await User.findOne({ email });
-        if (user) {
-          user.githubId = profile.id;
-          user.isVerified = false; // OTP required
-          user.provider = 'github';
-          await user.save();
-        } else {
-          user = new User({
-            githubId: profile.id,
-            name: profile.displayName || profile.username,
-            email: email,
-            isVerified: false, // OTP required
-            provider: 'github',
-            password: 'temp-password'
-          });
-          await user.save();
-        }
-
-        // Send OTP via SendGrid
-        await sendOtpEmail(user.email, user.name);
-
-        return done(null, user);
-      }
-    } catch (err) {
-      return done(err, null);
-    }
-  }
-));
-
-// 10. API Routes
+// 9. API Routes
 const router = express.Router();
 
 // Health check
@@ -424,8 +300,8 @@ app.post('/api/contact', async (req, res) => {
   const { name, email, message } = req.body;
 
   const msg = {
-    to: 'your-email@example.com', // where you want to receive messages
-    from: 'no-reply@quizshaala.com', // must be verified in SendGrid
+    to: 'your-email@example.com',
+    from: 'no-reply@quizshaala.com',
     subject: `New Contact Form Submission from ${name}`,
     text: message,
     html: `<p><strong>Name:</strong> ${name}</p>
@@ -457,49 +333,47 @@ router.post('/signup', async (req, res) => {
     
     const existingUser = await User.findOne({ email });
 
-if (existingUser) {
-  if (!existingUser.isVerified) {
-    // User exists but NOT verified → resend OTP instead of blocking
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
+    if (existingUser) {
+      if (!existingUser.isVerified) {
+        // User exists but NOT verified → resend OTP
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
 
-    existingUser.otp = otp;
-    existingUser.otpExpires = otpExpires;
-    await existingUser.save();
+        existingUser.otp = otp;
+        existingUser.otpExpires = otpExpires;
+        await existingUser.save();
 
-    await sendEmail(
-      email,
-      "Quizshaala Email Verification",
-      `
-        <p>Hello ${existingUser.name},</p>
-        <p>Your OTP is: <strong>${otp}</strong></p>
-        <p>This OTP will expire in 10 minutes.</p>
-      `
-    );
+        await sendEmail(
+          email,
+          "Quizshaala Email Verification",
+          `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+              <h2 style="color: #4F46E5;">Quizshaala Email Verification</h2>
+              <p>Hello ${existingUser.name},</p>
+              <p>Your OTP is: <strong>${otp}</strong></p>
+              <p>This OTP will expire in 10 minutes.</p>
+            </div>
+          `
+        );
 
-    return res.status(200).json({
-      message: 'Email already exists but not verified. OTP resent.',
-      userId: existingUser._id
-    });
-  }
+        return res.status(200).json({
+          message: 'Email already exists but not verified. OTP resent.',
+          userId: existingUser._id
+        });
+      }
 
-  // Already verified → block signup
-  return res.status(400).json({ error: 'User with this email already exists' });
-}
-
+      // Already verified → block signup
+      return res.status(400).json({ error: 'User with this email already exists' });
+    }
     
     // Generate OTP
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    const otpExpires = new Date(Date.now() + 10 * 60 * 1000); // OTP expires in 10 minutes
-    
-    // Hash password
-    const salt = await bcrypt.genSalt(12);
-    const hashedPassword = await bcrypt.hash(password, salt);
+    const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
     
     // Create user with OTP (not verified yet)
     const user = new User({ 
       email, 
-      password: hashedPassword, 
+      password, 
       name,
       otp,
       otpExpires,
@@ -598,7 +472,6 @@ router.post('/verify-otp', async (req, res) => {
   }
 });
 
-
 // Resend OTP
 router.post('/resend-otp', async (req, res) => {
   try {
@@ -625,7 +498,7 @@ router.post('/resend-otp', async (req, res) => {
     
     // Generate new OTP
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    const otpExpires = new Date(Date.now() + 10 * 60 * 1000); // OTP expires in 10 minutes
+    const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
     
     // Update user with new OTP
     user.otp = otp;
@@ -643,7 +516,7 @@ router.post('/resend-otp', async (req, res) => {
             <p>Hello ${user.name},</p>
             <p>Here is your new verification OTP:</p>
             <div style="background-color: #f3f4f6; padding: 16px; text-align: center; margin: 20px 0;">
-              <span style="font-size: 24px; font-weight: bold; letter-spacing: 4px; color: '4F46E5';">${otp}</span>
+              <span style="font-size: 24px; font-weight: bold; letter-spacing: 4px; color: #4F46E5;">${otp}</span>
             </div>
             <p>This OTP will expire in 10 minutes.</p>
             <p>If you didn't request this, please ignore this email.</p>
@@ -664,8 +537,7 @@ router.post('/resend-otp', async (req, res) => {
   }
 });
 
-
-// Local Login (updated to check verification status)
+// Local Login
 router.post('/login', loginLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -764,7 +636,7 @@ router.post('/logout', authenticateToken, async (req, res) => {
   }
 });
 
-// ------------------ QUIZ HISTORY ROUTES ------------------
+// Quiz History Routes
 router.post("/history", authenticateToken, async (req, res) => {
   try {
     const { topic, score, totalQuestions } = req.body;
@@ -794,9 +666,8 @@ router.get("/history", authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch history' }); 
   }
 });
-// ----------------------------------------------------------
 
-// ------------------ LEADERBOARD ROUTE ------------------
+// Leaderboard Route
 router.get("/leaderboard/:topic", async (req, res) => {
   const { topic } = req.params;
   const validTopics = [ 
@@ -823,9 +694,8 @@ router.get("/leaderboard/:topic", async (req, res) => {
     res.status(500).json({ error: "Failed to load leaderboard" }); 
   }
 });
-// ----------------------------------------------------------
 
-// ------------------ DASHBOARD SUMMARY ROUTE ------------------
+// Dashboard Summary Route
 router.get("/dashboard", authenticateToken, async (req, res) => {
   try {
     const userId = req.user.userId;
@@ -862,7 +732,6 @@ router.get("/dashboard", authenticateToken, async (req, res) => {
     res.status(500).json({ error: "Failed to load dashboard" }); 
   }
 });
-// ----------------------------------------------------------
 
 // Get user profile (protected route)
 router.get('/profile', authenticateToken, async (req, res) => {
@@ -877,7 +746,6 @@ router.get('/profile', authenticateToken, async (req, res) => {
         email: user.email,
         name: user.name,
         isVerified: user.isVerified,
-        provider: user.provider,
         createdAt: user.createdAt
       }
     });
@@ -942,82 +810,6 @@ router.put('/change-password', authenticateToken, async (req, res) => {
   }
 });
 
-// OAuth Routes
-app.get('/auth/google', passport.authenticate('google', { scope: ['profile', 'email'] }));
-app.get('/auth/google/callback',
-  passport.authenticate('google', { failureRedirect: process.env.FRONTEND_URL + '/login' }),
-  (req, res) => {
-    const user = req.user;
-    // For OAuth users, redirect to OTP verification page instead of auto-login
-    res.redirect(`${process.env.FRONTEND_URL}/verify-oauth?email=${user.email}&provider=${user.provider}`);
-  }
-);
-
-app.get('/auth/github', passport.authenticate('github', { scope: ['user:email'] }));
-app.get('/auth/github/callback',
-  passport.authenticate('github', { failureRedirect: process.env.FRONTEND_URL + '/login' }),
-  (req, res) => {
-    const user = req.user;
-    // For OAuth users, redirect to OTP verification page instead of auto-login
-    res.redirect(`${process.env.FRONTEND_URL}/verify-oauth?email=${user.email}&provider=${user.provider}`);
-  }
-);
-
-// OAuth OTP verification endpoint
-router.post('/verify-oauth-otp', async (req, res) => {
-  try {
-    const { email, otp } = req.body;
-    
-    if (!email || !otp) {
-      return res.status(400).json({ error: 'Email and OTP are required' });
-    }
-    
-    const user = await User.findOne({ email });
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-    
-    // Check if OTP matches and is not expired
-    if (user.otp !== otp) {
-      return res.status(400).json({ error: 'Invalid OTP' });
-    }
-    
-    if (user.otpExpires < new Date()) {
-      return res.status(400).json({ error: 'OTP has expired' });
-    }
-    
-    // ✅ Reset lock and login attempts
-    user.isVerified = true;
-    user.otp = null;
-    user.otpExpires = null;
-    user.loginAttempts = 0;
-    user.lockUntil = null;
-    await user.save();
-    
-    // Generate tokens
-    const { accessToken, refreshToken } = user.generateTokens();
-    user.refreshToken = refreshToken;
-    await user.save();
-    
-    res.json({
-      message: 'Email verified successfully. Registration complete!',
-      user: {
-        id: user._id,
-        email: user.email,
-        name: user.name,
-        isVerified: user.isVerified,
-        provider: user.provider
-      },
-      accessToken,
-      refreshToken
-    });
-  } catch (error) {
-    console.error('OAuth OTP verification error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-
 // Final route setup
 app.use('/api', router);
 
@@ -1033,7 +825,7 @@ app.use((req, res) => {
 });
 
 // Server Start
-const PORT = process.env.PORT || 1;
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on http://localhost:${PORT}`);
 });
