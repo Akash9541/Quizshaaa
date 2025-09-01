@@ -39,11 +39,19 @@ const loginLimiter = rateLimit({
 });
 
 // 5. Session Management (keeping for potential future use)
+console.log("SESSION_SECRET =", process.env.SESSION_SECRET); // log first
+
 app.use(session({ 
   secret: process.env.SESSION_SECRET, 
   resave: false, 
-  saveUninitialized: true 
+  saveUninitialized: true,
+  cookie: {
+    secure: process.env.NODE_ENV === 'production', // true only on HTTPS
+    httpOnly: true,
+    maxAge: 1000 * 60 * 60 * 24 // 1 day
+  }
 }));
+
 
 // 6. Connect to MongoDB
 mongoose.connect(process.env.MONGODB_URI || process.env.MONGO_URI);
