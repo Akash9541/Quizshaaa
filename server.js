@@ -1,4 +1,4 @@
-// server.js
+// server.js - Enhanced Version
 
 // 1. Core Module Imports
 import express from 'express';
@@ -11,6 +11,8 @@ import dotenv from 'dotenv';
 import session from 'express-session';
 import nodemailer from 'nodemailer';
 import sgMail from '@sendgrid/mail';
+import helmet from 'helmet'; // Added for security headers
+import { body, validationResult } from 'express-validator'; // Added for input validation
 
 // 2. Load Environment Variables
 dotenv.config();
@@ -18,29 +20,83 @@ dotenv.config();
 // 3. Initialize Express App
 const app = express();
 
-// 5. Session Management (keeping for potential future use)
-console.log("SESSION_SECRET =", process.env.SESSION_SECRET); // log first
+// 4. Enhanced Middleware
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrc: ["'self'"],
+    },
+  },
+  crossOriginEmbedderPolicy: false
+}));
+
+app.use(express.json({ limit: '10kb' }));
+app.use(cors({
+  origin: process.env.NODE_ENV === 'production' 
+    ? process.env.FRONTEND_URL 
+    : 'http://localhost:3000',
+  credentials: true
+}));
+
+// 5. Session Management
+console.log("SESSION_SECRET =", process.env.SESSION_SECRET ? "Set" : "Not Set");
 
 app.use(session({ 
   secret: process.env.SESSION_SECRET, 
   resave: false, 
-  saveUninitialized: true,
+  saveUninitialized: false, // Changed to false for security
   cookie: {
-    secure: process.env.NODE_ENV === 'production', // true only on HTTPS
+    secure: process.env.NODE_ENV === 'production',
     httpOnly: true,
+    sameSite: 'strict',
     maxAge: 1000 * 60 * 60 * 24 // 1 day
   }
 }));
 
+// 6. Database Connection with enhanced settings
+mongoose.set('strictQuery', true);
 mongoose.connect(process.env.MONGO_URI, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
+  serverSelectionTimeoutMS: 5000,
+  socketTimeoutMS: 45000,
 })
 .then(() => console.log('✅ Connected to MongoDB'))
-.catch(err => console.error('Connection error:', err));
+.catch(err => {
+  console.error('❌ MongoDB connection error:', err);
+  process.exit(1);
+});
 
+// 7. Enhanced Rate Limiting
+const generalLimiter = rateLimit({ 
+  windowMs: 15 * 60 * 1000,
+  max: 100, 
+  message: { error: 'Too many requests, please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
-// 7. Mongoose User Schema (cleaned up - removed OAuth fields)
+const loginLimiter = rateLimit({ 
+  windowMs: 15 * 60 * 1000,
+  max: 5, 
+  message: { error: 'Too many login attempts, please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const otpLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 3,
+  message: { error: 'Too many OTP requests, please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+app.use('/api/', generalLimiter);
+
+// 8. Mongoose User Schema with enhanced security
 const userSchema = new mongoose.Schema({
   email: { 
     type: String, 
@@ -53,12 +109,14 @@ const userSchema = new mongoose.Schema({
   password: { 
     type: String, 
     minlength: 6,
-    required: true
+    required: true,
+    select: false // Don't include password in queries by default
   },
   name: { 
     type: String, 
     required: true, 
-    trim: true 
+    trim: true,
+    maxlength: 50
   },
   isVerified: { 
     type: Boolean, 
@@ -66,25 +124,44 @@ const userSchema = new mongoose.Schema({
   },
   loginAttempts: { 
     type: Number, 
-    default: 0 
+    default: 0,
+    select: false
   },
-  lockUntil: Date,
-  refreshToken: String,
+  lockUntil: {
+    type: Date,
+    select: false
+  },
+  refreshToken: {
+    type: String,
+    select: false
+  },
   otp: {
     type: String,
+    select: false,
     default: null
   },
   otpExpires: {
     type: Date,
+    select: false,
     default: null
   }
 }, { 
   timestamps: true 
 });
 
+// Index for better performance
+userSchema.index({ email: 1 });
+userSchema.index({ isVerified: 1 });
+
 userSchema.virtual('isLocked').get(function() { 
   return !!(this.lockUntil && this.lockUntil > Date.now()); 
 });
+
+userSchema.methods.resetLock = function() {
+  this.loginAttempts = 0;
+  this.lockUntil = undefined;
+  return this.save();
+};
 
 userSchema.pre('save', async function(next) { 
   if (!this.isModified('password')) return next(); 
@@ -98,13 +175,14 @@ userSchema.pre('save', async function(next) {
 });
 
 userSchema.methods.comparePassword = async function(candidatePassword) { 
-  if (this.isLocked) throw new Error('Account is temporarily locked due to too many failed login attempts'); 
+  if (this.isLocked) {
+    throw new Error('Account is temporarily locked due to too many failed login attempts. Try again in 30 minutes.');
+  }
+  
   const isMatch = await bcrypt.compare(candidatePassword, this.password); 
   if (isMatch) { 
     if (this.loginAttempts > 0) { 
-      this.loginAttempts = 0; 
-      this.lockUntil = undefined; 
-      await this.save(); 
+      await this.resetLock();
     } 
     return true; 
   } else { 
@@ -123,13 +201,17 @@ userSchema.methods.generateTokens = function() {
     email: this.email, 
     name: this.name 
   }, process.env.JWT_SECRET, { 
-    expiresIn: '15m' 
+    expiresIn: '15m',
+    issuer: 'quizshaala-api',
+    audience: 'quizshaala-users'
   }); 
   
   const refreshToken = jwt.sign({ 
     userId: this._id 
   }, process.env.JWT_REFRESH_SECRET, { 
-    expiresIn: '7d' 
+    expiresIn: '7d',
+    issuer: 'quizshaala-api',
+    audience: 'quizshaala-users'
   }); 
   
   return { accessToken, refreshToken }; 
@@ -137,7 +219,7 @@ userSchema.methods.generateTokens = function() {
 
 const User = mongoose.model('User', userSchema);
 
-// Quiz History Schema
+// Quiz History Schema with indexing
 const quizHistorySchema = new mongoose.Schema({
   userId: { 
     type: mongoose.Schema.Types.ObjectId, 
@@ -158,11 +240,13 @@ const quizHistorySchema = new mongoose.Schema({
   },
   score: { 
     type: Number, 
-    required: true 
+    required: true,
+    min: 0
   },
   totalQuestions: { 
     type: Number, 
-    required: true 
+    required: true,
+    min: 1
   },
   percentage: { 
     type: Number 
@@ -181,8 +265,12 @@ const quizHistorySchema = new mongoose.Schema({
   timestamps: true 
 });
 
+// Index for better performance
+quizHistorySchema.index({ userId: 1, dateTaken: -1 });
+quizHistorySchema.index({ topic: 1, score: -1 });
+
 quizHistorySchema.pre('save', function(next) {
-  if (this.isNew) {
+  if (this.isNew || this.isModified('score') || this.isModified('totalQuestions')) {
     this.percentage = Math.round((this.score / this.totalQuestions) * 100);
     this.correctAnswers = this.score;
     this.incorrectAnswers = this.totalQuestions - this.score;
@@ -192,7 +280,7 @@ quizHistorySchema.pre('save', function(next) {
 
 const QuizHistory = mongoose.model("QuizHistory", quizHistorySchema);
 
-// 8. SendGrid Email Setup
+// 9. Enhanced Email Setup with better error handling
 const transporter = nodemailer.createTransport({
   host: "smtp.sendgrid.net",
   port: 587,
@@ -205,36 +293,31 @@ const transporter = nodemailer.createTransport({
 // Set up SendGrid API key
 sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
-// Email sending function
-const sendEmail = async (to, subject, html) => {
+// Enhanced email sending function with retry logic
+const sendEmail = async (to, subject, html, retries = 3) => {
   const mailOptions = {
-    from: process.env.EMAIL_FROM || "quizzhaala@example.com",
+    from: process.env.EMAIL_FROM || "noreply@quizshaala.com",
     to,
     subject,
     html,
   };
 
-  try {
-    await transporter.sendMail(mailOptions);
-    console.log('✅ Email sent successfully to:', to);
-    return true;
-  } catch (err) {
-    console.error('❌ Email sending error:', err);
-    throw new Error('Failed to send email');
+  for (let i = 0; i < retries; i++) {
+    try {
+      await transporter.sendMail(mailOptions);
+      console.log('✅ Email sent successfully to:', to);
+      return true;
+    } catch (err) {
+      console.error(`❌ Email sending attempt ${i + 1} failed:`, err);
+      if (i === retries - 1) throw new Error('Failed to send email after multiple attempts');
+      // Wait before retrying (exponential backoff would be better)
+      await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1)));
+    }
   }
 };
 
 // OTP Email function
-const sendOtpEmail = async (email, name) => {
-  const otp = Math.floor(100000 + Math.random() * 900000).toString();
-  const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
-  
-  // Update user with new OTP
-  await User.findOneAndUpdate(
-    { email },
-    { otp, otpExpires }
-  );
-  
+const sendOtpEmail = async (email, name, otp) => {
   try {
     await sendEmail(
       email,
@@ -262,13 +345,31 @@ const sendOtpEmail = async (email, name) => {
   }
 };
 
-// 9. API Routes
+// 10. Validation middleware
+const validate = (validations) => {
+  return async (req, res, next) => {
+    await Promise.all(validations.map(validation => validation.run(req)));
+
+    const errors = validationResult(req);
+    if (errors.isEmpty()) {
+      return next();
+    }
+
+    res.status(400).json({ 
+      error: 'Validation failed', 
+      details: errors.array() 
+    });
+  };
+};
+
+// 11. API Routes
 const router = express.Router();
 
 // Health check
 app.get('/api/health', (req, res) => res.json({ 
   status: 'Server is running', 
-  timestamp: new Date().toISOString() 
+  timestamp: new Date().toISOString(),
+  uptime: process.uptime()
 }));
 
 // Send email endpoint (for testing)
@@ -285,12 +386,16 @@ app.post("/send-email", async (req, res) => {
 });
 
 // Contact form endpoint using SendGrid
-app.post('/api/contact', async (req, res) => {
+app.post('/api/contact', [
+  body('name').trim().isLength({ min: 1 }).withMessage('Name is required'),
+  body('email').isEmail().withMessage('Valid email is required'),
+  body('message').trim().isLength({ min: 10 }).withMessage('Message must be at least 10 characters')
+], validate, async (req, res) => {
   const { name, email, message } = req.body;
 
   const msg = {
-    to: 'your-email@example.com',
-    from: 'no-reply@quizshaala.com',
+    to: process.env.CONTACT_EMAIL || 'your-email@example.com',
+    from: process.env.EMAIL_FROM || 'no-reply@quizshaala.com',
     subject: `New Contact Form Submission from ${name}`,
     text: message,
     html: `<p><strong>Name:</strong> ${name}</p>
@@ -303,22 +408,18 @@ app.post('/api/contact', async (req, res) => {
     res.status(200).json({ message: 'Email sent successfully' });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: 'Email failed', error });
+    res.status(500).json({ message: 'Email failed', error: error.message });
   }
 });
 
-// OTP Signup
-router.post('/signup', async (req, res) => {
+// OTP Signup with validation
+router.post('/signup', [
+  body('email').isEmail().normalizeEmail().withMessage('Valid email is required'),
+  body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
+  body('name').trim().isLength({ min: 1, max: 50 }).withMessage('Name must be between 1-50 characters')
+], validate, async (req, res) => {
   try {
     const { email, password, name } = req.body;
-    
-    if (!email || !password || !name) {
-      return res.status(400).json({ error: 'All fields are required' });
-    }
-    
-    if (password.length < 6) {
-      return res.status(400).json({ error: 'Password must be at least 6 characters long' });
-    }
     
     const existingUser = await User.findOne({ email });
 
@@ -332,18 +433,7 @@ router.post('/signup', async (req, res) => {
         existingUser.otpExpires = otpExpires;
         await existingUser.save();
 
-        await sendEmail(
-          email,
-          "Quizshaala Email Verification",
-          `
-            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-              <h2 style="color: #4F46E5;">Quizshaala Email Verification</h2>
-              <p>Hello ${existingUser.name},</p>
-              <p>Your OTP is: <strong>${otp}</strong></p>
-              <p>This OTP will expire in 10 minutes.</p>
-            </div>
-          `
-        );
+        await sendOtpEmail(email, existingUser.name, otp);
 
         return res.status(200).json({
           message: 'Email already exists but not verified. OTP resent.',
@@ -373,24 +463,7 @@ router.post('/signup', async (req, res) => {
 
     // Send OTP email using SendGrid
     try {
-      await sendEmail(
-        email,
-        "Quizshaala Email Verification",
-        `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2 style="color: #4F46E5;">Quizshaala Email Verification</h2>
-            <p>Hello ${name},</p>
-            <p>Thank you for registering with Quizshaala. Please use the following OTP to verify your email address:</p>
-            <div style="background-color: #f3f4f6; padding: 16px; text-align: center; margin: 20px 0;">
-              <span style="font-size: 24px; font-weight: bold; letter-spacing: 4px; color: #4F46E5;">${otp}</span>
-            </div>
-            <p>This OTP will expire in 10 minutes.</p>
-            <p>If you didn't request this, please ignore this email.</p>
-            <br>
-            <p>Best regards,<br>Quizshaala Team</p>
-          </div>
-        `
-      );
+      await sendOtpEmail(email, name, otp);
       
       res.status(201).json({
         message: 'OTP sent to email. Please verify to complete registration.',
@@ -408,16 +481,15 @@ router.post('/signup', async (req, res) => {
   }
 });
 
-// Verify OTP
-router.post('/verify-otp', async (req, res) => {
+// Verify OTP with validation
+router.post('/verify-otp', [
+  body('email').isEmail().normalizeEmail().withMessage('Valid email is required'),
+  body('otp').isLength({ min: 6, max: 6 }).withMessage('OTP must be 6 digits')
+], validate, async (req, res) => {
   try {
     const { email, otp } = req.body;
     
-    if (!email || !otp) {
-      return res.status(400).json({ error: 'Email and OTP are required' });
-    }
-    
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ email }).select('+otp +otpExpires');
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
@@ -461,14 +533,12 @@ router.post('/verify-otp', async (req, res) => {
   }
 });
 
-// Resend OTP
-router.post('/resend-otp', async (req, res) => {
+// Resend OTP with rate limiting
+router.post('/resend-otp', otpLimiter, [
+  body('email').isEmail().normalizeEmail().withMessage('Valid email is required')
+], validate, async (req, res) => {
   try {
     const { email } = req.body;
-    
-    if (!email) {
-      return res.status(400).json({ error: 'Email is required' });
-    }
     
     const user = await User.findOne({ email });
     if (!user) {
@@ -479,10 +549,9 @@ router.post('/resend-otp', async (req, res) => {
       return res.status(400).json({ error: 'Email is already verified' });
     }
 
-    // ✅ Reset lock if user is currently locked
-    if (user.isLocked) {
-      user.loginAttempts = 0;
-      user.lockUntil = null;
+    // ✅ Always reset login attempts when OTP is requested
+    if (user.loginAttempts > 0 || user.isLocked) {
+      await user.resetLock();
     }
     
     // Generate new OTP
@@ -496,24 +565,7 @@ router.post('/resend-otp', async (req, res) => {
     
     // Send new OTP email using SendGrid
     try {
-      await sendEmail(
-        email,
-        "Quizshaala New Verification OTP",
-        `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2 style="color: #4F46E5;">Quizshaala Email Verification</h2>
-            <p>Hello ${user.name},</p>
-            <p>Here is your new verification OTP:</p>
-            <div style="background-color: #f3f4f6; padding: 16px; text-align: center; margin: 20px 0;">
-              <span style="font-size: 24px; font-weight: bold; letter-spacing: 4px; color: #4F46E5;">${otp}</span>
-            </div>
-            <p>This OTP will expire in 10 minutes.</p>
-            <p>If you didn't request this, please ignore this email.</p>
-            <br>
-            <p>Best regards,<br>Quizshaala Team</p>
-          </div>
-        `
-      );
+      await sendOtpEmail(email, user.name, otp);
       
       res.json({ message: 'New OTP sent to your email' });
     } catch (emailError) {
@@ -526,15 +578,15 @@ router.post('/resend-otp', async (req, res) => {
   }
 });
 
-// Local Login
-router.post('/login', loginLimiter, async (req, res) => {
+// Local Login with validation
+router.post('/login', loginLimiter, [
+  body('email').isEmail().normalizeEmail().withMessage('Valid email is required'),
+  body('password').exists().withMessage('Password is required')
+], validate, async (req, res) => {
   try {
     const { email, password } = req.body;
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password are required' });
-    }
     
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ email }).select('+password +loginAttempts +lockUntil');
     if (!user) {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
@@ -580,14 +632,21 @@ router.post('/refresh-token', async (req, res) => {
     if (!refreshToken) {
       return res.status(401).json({ error: 'Refresh token required' });
     }
-    const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
-    const user = await User.findById(decoded.userId);
+    
+    const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET, {
+      issuer: 'quizshaala-api',
+      audience: 'quizshaala-users'
+    });
+    
+    const user = await User.findById(decoded.userId).select('+refreshToken');
     if (!user || user.refreshToken !== refreshToken) {
       return res.status(403).json({ error: 'Invalid refresh token' });
     }
+    
     const { accessToken, refreshToken: newRefreshToken } = user.generateTokens();
     user.refreshToken = newRefreshToken;
     await user.save();
+    
     res.json({
       accessToken,
       refreshToken: newRefreshToken
@@ -602,10 +661,15 @@ router.post('/refresh-token', async (req, res) => {
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
+  
   if (!token) {
     return res.status(401).json({ error: 'Access token required' });
   }
-  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+  
+  jwt.verify(token, process.env.JWT_SECRET, {
+    issuer: 'quizshaala-api',
+    audience: 'quizshaala-users'
+  }, (err, user) => {
     if (err) {
       return res.status(403).json({ error: 'Invalid or expired token' });
     }
@@ -625,19 +689,29 @@ router.post('/logout', authenticateToken, async (req, res) => {
   }
 });
 
-// Quiz History Routes
-router.post("/history", authenticateToken, async (req, res) => {
+// Quiz History Routes with validation
+router.post("/history", authenticateToken, [
+  body('topic').isIn([
+    'Logical Reasoning', 
+    'Coding & Problem-Solving', 
+    'Quantitative Aptitude', 
+    'CS Fundamentals', 
+    'Verbal & Communication', 
+    'Mock Tests & Assessments'
+  ]).withMessage('Valid topic is required'),
+  body('score').isInt({ min: 0 }).withMessage('Valid score is required'),
+  body('totalQuestions').isInt({ min: 1 }).withMessage('Valid total questions is required')
+], validate, async (req, res) => {
   try {
     const { topic, score, totalQuestions } = req.body;
-    if (!topic || score == null || totalQuestions == null) {
-      return res.status(400).json({ error: "Missing required fields" });
-    }
+    
     const history = new QuizHistory({ 
       userId: req.user.userId, 
       topic, 
       score, 
       totalQuestions 
     });
+    
     await history.save();
     res.status(201).json({ message: "History saved", history });
   } catch (error) { 
@@ -648,8 +722,26 @@ router.post("/history", authenticateToken, async (req, res) => {
 
 router.get("/history", authenticateToken, async (req, res) => {
   try { 
-    const history = await QuizHistory.find({ userId: req.user.userId }).sort({ dateTaken: -1 }); 
-    res.json(history); 
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+    
+    const history = await QuizHistory.find({ userId: req.user.userId })
+      .sort({ dateTaken: -1 })
+      .skip(skip)
+      .limit(limit);
+      
+    const total = await QuizHistory.countDocuments({ userId: req.user.userId });
+    
+    res.json({
+      history,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    }); 
   } catch (error) { 
     console.error("Fetch history error:", error); 
     res.status(500).json({ error: 'Failed to fetch history' }); 
@@ -667,17 +759,44 @@ router.get("/leaderboard/:topic", async (req, res) => {
     'Verbal & Communication', 
     'Mock Tests & Assessments' 
   ];
-  if (!validTopics.includes(topic)) return res.status(400).json({ error: "Invalid topic" });
+  
+  if (!validTopics.includes(topic)) {
+    return res.status(400).json({ error: "Invalid topic" });
+  }
+  
   try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const skip = (page - 1) * limit;
+    
     const leaderboard = await QuizHistory.aggregate([
       { $match: { topic } },
       { $lookup: { from: "users", localField: "userId", foreignField: "_id", as: "user" } },
       { $unwind: "$user" },
-      { $project: { _id: 1, score: 1, totalQuestions: 1, percentage: 1, dateTaken: 1, username: "$user.name" } },
+      { $project: { 
+        _id: 1, 
+        score: 1, 
+        totalQuestions: 1, 
+        percentage: 1, 
+        dateTaken: 1, 
+        username: "$user.name" 
+      }},
       { $sort: { score: -1, percentage: -1, dateTaken: 1 } },
-      { $limit: 50 }
+      { $skip: skip },
+      { $limit: limit }
     ]);
-    res.json(leaderboard);
+    
+    const total = await QuizHistory.countDocuments({ topic });
+    
+    res.json({
+      leaderboard,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    });
   } catch (error) { 
     console.error("Leaderboard error:", error); 
     res.status(500).json({ error: "Failed to load leaderboard" }); 
@@ -689,21 +808,26 @@ router.get("/dashboard", authenticateToken, async (req, res) => {
   try {
     const userId = req.user.userId;
     const history = await QuizHistory.find({ userId });
-    if (history.length === 0) return res.json({ 
-      totalQuizzes: 0, 
-      bestScore: 0, 
-      averageScore: 0, 
-      topics: [], 
-      completionRate: 0 
-    });
+    
+    if (history.length === 0) {
+      return res.json({ 
+        totalQuizzes: 0, 
+        bestScore: 0, 
+        averageScore: 0, 
+        topics: [], 
+        badges: [],
+        lastActivity: null
+      });
+    }
 
     const totalQuizzes = history.length;
     const bestScore = Math.max(...history.map(h => h.score));
     const totalPossible = history.reduce((sum, h) => sum + h.totalQuestions, 0);
     const totalCorrect = history.reduce((sum, h) => sum + h.score, 0);
-    const averageScore = Math.round((totalCorrect / totalPossible) * 100);
+    const averageScore = totalPossible > 0 ? Math.round((totalCorrect / totalPossible) * 100) : 0;
     const topics = [...new Set(history.map(h => h.topic))];
     const badges = [];
+    
     if (bestScore >= 45) badges.push("Quiz Master");
     if (averageScore >= 80) badges.push("Top Performer");
     if (totalQuizzes >= 10) badges.push("Marathon Learner");
@@ -744,18 +868,19 @@ router.get('/profile', authenticateToken, async (req, res) => {
   }
 });
 
-// Update user profile
-router.put('/profile', authenticateToken, async (req, res) => {
+// Update user profile with validation
+router.put('/profile', authenticateToken, [
+  body('name').trim().isLength({ min: 1, max: 50 }).withMessage('Name must be between 1-50 characters')
+], validate, async (req, res) => {
   try {
     const { name } = req.body;
-    if (!name) {
-      return res.status(400).json({ error: 'Name is required' });
-    }
+    
     const user = await User.findByIdAndUpdate(
       req.user.userId,
       { name },
-      { new: true }
+      { new: true, runValidators: true }
     ).select('-password -refreshToken');
+    
     res.json({
       message: 'Profile updated successfully',
       user: {
@@ -771,27 +896,29 @@ router.put('/profile', authenticateToken, async (req, res) => {
   }
 });
 
-// Change password
-router.put('/change-password', authenticateToken, async (req, res) => {
+// Change password with validation
+router.put('/change-password', authenticateToken, [
+  body('currentPassword').exists().withMessage('Current password is required'),
+  body('newPassword').isLength({ min: 6 }).withMessage('New password must be at least 6 characters long')
+], validate, async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body;
-    if (!currentPassword || !newPassword) {
-      return res.status(400).json({ error: 'Current password and new password are required' });
-    }
-    if (newPassword.length < 6) {
-      return res.status(400).json({ error: 'New password must be at least 6 characters long' });
-    }
-    const user = await User.findById(req.user.userId);
+    
+    const user = await User.findById(req.user.userId).select('+password');
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
+    
     const isCurrentPasswordValid = await bcrypt.compare(currentPassword, user.password);
     if (!isCurrentPasswordValid) {
       return res.status(401).json({ error: 'Current password is incorrect' });
     }
+    
     const salt = await bcrypt.genSalt(12);
     user.password = await bcrypt.hash(newPassword, salt);
+    user.refreshToken = null; // Invalidate all refresh tokens on password change
     await user.save();
+    
     res.json({ message: 'Password changed successfully' });
   } catch (error) {
     console.error('Change password error:', error);
@@ -802,10 +929,40 @@ router.put('/change-password', authenticateToken, async (req, res) => {
 // Final route setup
 app.use('/api', router);
 
-// Error handling middleware
+// Enhanced Error handling middleware
 app.use((error, req, res, next) => {
   console.error(error.stack);
-  res.status(500).json({ error: 'Something went wrong!' });
+  
+  // Mongoose validation error
+  if (error.name === 'ValidationError') {
+    return res.status(400).json({ 
+      error: 'Validation Error',
+      details: Object.values(error.errors).map(e => e.message)
+    });
+  }
+  
+  // Mongoose duplicate key error
+  if (error.code === 11000) {
+    return res.status(400).json({ 
+      error: 'Duplicate field value entered',
+      details: 'This value already exists in our system'
+    });
+  }
+  
+  // JWT errors
+  if (error.name === 'JsonWebTokenError') {
+    return res.status(401).json({ error: 'Invalid token' });
+  }
+  
+  if (error.name === 'TokenExpiredError') {
+    return res.status(401).json({ error: 'Token expired' });
+  }
+  
+  res.status(500).json({ 
+    error: process.env.NODE_ENV === 'production' 
+      ? 'Internal server error' 
+      : error.message 
+  });
 });
 
 // 404 handler
@@ -817,6 +974,7 @@ app.use((req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on http://localhost:${PORT}`);
+  console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
 });
 
 export default app;
