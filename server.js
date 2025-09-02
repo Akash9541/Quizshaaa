@@ -1,6 +1,8 @@
 // server.js - Fixed Version
 
 // 1. Core Module Imports
+import MongoStore from 'connect-mongo';
+import helmet from 'helmet';
 import express from 'express';
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
@@ -18,6 +20,7 @@ dotenv.config();
 const app = express();
 
 // 4. Middleware
+app.use(helmet());
 // Replace your CORS configuration (around line 19-22) with this:
 
 // Replace lines 19-22 in your server.js with this:
@@ -41,17 +44,20 @@ app.use(cors({
 // 5. Session Management
 console.log("SESSION_SECRET =", process.env.SESSION_SECRET ? "Set" : "Not Set");
 
-app.use(session({ 
-  secret: process.env.SESSION_SECRET, 
-  resave: false, 
-  saveUninitialized: true,
+app.use(session({
+  secret: process.env.SESSION_SECRET,
+  resave: false,
+  saveUninitialized: false,
+  store: MongoStore.create({
+    mongoUrl: process.env.MONGO_URI,
+    ttl: 24 * 60 * 60 // 1 day
+  }),
   cookie: {
     secure: process.env.NODE_ENV === 'production',
     httpOnly: true,
-    maxAge: 1000 * 60 * 60 * 24 // 1 day
+    maxAge: 24 * 60 * 60 * 1000
   }
 }));
-
 // 6. Database Connection with enhanced settings
 mongoose.set('strictQuery', true);
 
