@@ -52,12 +52,13 @@ app.use(session({
   }
 }));
 
+mongoose.connect(process.env.MONGO_URI, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+})
+.then(() => console.log('✅ Connected to MongoDB'))
+.catch(err => console.error('Connection error:', err));
 
-// 6. Connect to MongoDB
-mongoose.connect(process.env.MONGODB_URI || process.env.MONGO_URI);
-const db = mongoose.connection;
-db.on('error', console.error.bind(console, 'Connection error:'));
-db.once('open', () => console.log('✅ Connected to MongoDB'));
 
 // 7. Mongoose User Schema (cleaned up - removed OAuth fields)
 const userSchema = new mongoose.Schema({
