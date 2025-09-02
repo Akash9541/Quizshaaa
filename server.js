@@ -21,7 +21,7 @@ const app = express();
 // 4. Middleware Setup
 app.use(express.json());
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+  origin: process.env.FRONTEND_URL || 'https://quizzshaala-37pdveagf-akashs-projects-694303cc.vercel.app',
   credentials: true
 }));
 
