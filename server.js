@@ -9,7 +9,6 @@ import cors from 'cors';
 import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
 import session from 'express-session';
-import nodemailer from 'nodemailer';
 import sgMail from '@sendgrid/mail';
 
 // 2. Load Environment Variables
@@ -19,10 +18,24 @@ dotenv.config();
 const app = express();
 
 // 4. Middleware
-app.use(express.json());
+// Replace your CORS configuration (around line 19-22) with this:
+
+// Replace lines 19-22 in your server.js with this:
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
-  credentials: true
+  origin: [
+    'https://quizzshaala.onrender.com'
+  ],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: [
+    'Content-Type', 
+    'Authorization', 
+    'X-Requested-With',
+    'Accept',
+    'Origin'
+  ],
+  optionsSuccessStatus: 200
 }));
 
 // 5. Session Management
@@ -247,49 +260,33 @@ quizHistorySchema.pre('save', function(next) {
 
 const QuizHistory = mongoose.model("QuizHistory", quizHistorySchema);
 
-// 9. SendGrid Email Setup
-const transporter = nodemailer.createTransport({
-  host: "smtp.sendgrid.net",
-  port: 587,
-  auth: {
-    user: "apikey",
-    pass: process.env.SENDGRID_API_KEY,
-  },
-});
 
 // Set up SendGrid API key
 sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
-// Email sending function
 const sendEmail = async (to, subject, html) => {
-  const mailOptions = {
-    from: process.env.EMAIL_FROM || "quizzhaala@example.com",
+  const msg = {
     to,
+    from: process.env.EMAIL_FROM || 'quizzhaala@example.com',
     subject,
     html,
   };
 
   try {
-    await transporter.sendMail(mailOptions);
+    await sgMail.send(msg);
     console.log('✅ Email sent successfully to:', to);
     return true;
   } catch (err) {
     console.error('❌ Email sending error:', err);
+    if (err.response) {
+      console.error('SendGrid error response:', err.response.body);
+    }
     throw new Error('Failed to send email');
   }
 };
 
 // OTP Email function
-const sendOtpEmail = async (email, name) => {
-  const otp = Math.floor(100000 + Math.random() * 900000).toString();
-  const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
-  
-  // Update user with new OTP
-  await User.findOneAndUpdate(
-    { email },
-    { otp, otpExpires }
-  );
-  
+  const sendOtpEmail = async (email, name, otp) => {
   try {
     await sendEmail(
       email,
@@ -316,7 +313,6 @@ const sendOtpEmail = async (email, name) => {
     throw new Error('Failed to send verification email');
   }
 };
-
 // 10. API Routes
 const router = express.Router();
 
