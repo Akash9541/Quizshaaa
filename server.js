@@ -18,26 +18,6 @@ dotenv.config();
 // 3. Initialize Express App
 const app = express();
 
-// 4. Middleware Setup
-app.use(express.json());
-app.use(cors({
-  origin: process.env.FRONTEND_URL || 'https://quizzshaala-37pdveagf-akashs-projects-694303cc.vercel.app',
-  credentials: true
-}));
-
-const limiter = rateLimit({ 
-  windowMs: 15 * 60 * 1000, 
-  max: 100, 
-  message: { error: 'Too many requests, please try again later.' } 
-});
-app.use('/api/', limiter);
-
-const loginLimiter = rateLimit({ 
-  windowMs: 15 * 60 * 1000, 
-  max: 5, 
-  message: { error: 'Too many login attempts, please try again later.' } 
-});
-
 // 5. Session Management (keeping for potential future use)
 console.log("SESSION_SECRET =", process.env.SESSION_SECRET); // log first
 
