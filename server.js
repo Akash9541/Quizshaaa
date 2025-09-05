@@ -18,6 +18,9 @@ dotenv.config();
 
 // 3. Initialize Express App
 const app = express();
+app.set('trust proxy', 1);
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // 4. Middleware
 app.use(helmet());
@@ -97,13 +100,15 @@ const connectDB = async () => {
 connectDB();
 
 // 7. Rate Limiting
-// General API rate limiter
-const limiter = rateLimit({ 
-  windowMs: 15 * 60 * 1000,
-  max: 100, 
-  message: { error: 'Too many requests, please try again later.' } 
+app.set('trust proxy', 1);
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // limit each IP to 100 requests per windowMs
+  standardHeaders: true,
+  legacyHeaders: false,
 });
-app.use('/api/', limiter);
+
+app.use(limiter);
 
 // Login-specific rate limiter
 const loginLimiter = rateLimit({ 
@@ -586,10 +591,11 @@ router.post('/resend-otp', async (req, res) => {
 // Local Login
 router.post('/login', loginLimiter, async (req, res) => {
   try {
-    const { email, password } = req.body;
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password are required' });
-    }
+    const { email, password } = req.body || {};
+
+if (!email || !password) {
+  return res.status(400).json({ error: 'email and password are required' });
+}
     
     const user = await User.findOne({ email });
     if (!user) {
