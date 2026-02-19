@@ -23,13 +23,18 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(helmet());
 
+const allowedOrigins = [
+  process.env.FRONTEND_URL,
+  process.env.BACKEND_URL,
+  'https://quizzshaala.onrender.com',
+  'https://quizshaala.onrender.com',
+  'http://localhost:5173',
+  'http://localhost:5174',
+  'http://localhost:3000'
+].filter(Boolean);
+
 app.use(cors({
-  origin: [
-    'https://quizzshaala.onrender.com',
-    'http://localhost:5173',
-    'http://localhost:5174',
-    'http://localhost:3000'
-  ],
+  origin: allowedOrigins,
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: [
