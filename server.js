@@ -1,4 +1,5 @@
 import express from 'express';
+import dns from 'node:dns';
 import helmet from 'helmet';
 import cors from 'cors';
 import rateLimit from 'express-rate-limit';
@@ -13,6 +14,7 @@ import otpRoutes from './routes/otpRoutes.js';
 
 // Load Environment Variables
 dotenv.config();
+dns.setDefaultResultOrder('ipv4first');
 
 // Initialize Express App
 const app = express();
