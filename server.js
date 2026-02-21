@@ -11,6 +11,8 @@ import connectDB from './config/db.js';
 import authRoutes from './routes/authRoutes.js';
 import quizRoutes from './routes/quizRoutes.js';
 import otpRoutes from './routes/otpRoutes.js';
+import emailRoutes from './routes/emailRoutes.js';
+import { verifyEmailTransport } from './services/emailService.js';
 
 // Load Environment Variables
 dotenv.config();
@@ -79,6 +81,10 @@ app.use(session({
 // Connect to Database
 connectDB();
 
+verifyEmailTransport()
+  .then(() => console.log('Email transporter is ready'))
+  .catch((error) => console.warn(`Email transporter unavailable: ${error.message}`));
+
 // Rate Limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
@@ -93,6 +99,7 @@ app.use(limiter);
 app.use('/api', authRoutes);
 app.use('/api', quizRoutes);
 app.use('/api', otpRoutes);
+app.use('/api', emailRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => res.json({
@@ -101,5 +108,5 @@ app.get('/api/health', (req, res) => res.json({
 }));
 
 // Start Server
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5001;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));

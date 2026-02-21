@@ -1,14 +1,14 @@
 import otpGenerator from 'otp-generator';
 import bcrypt from 'bcryptjs';
 import Otp from '../models/Otp.js';
-import User from '../models/User.js';
-import { sendEmail } from '../utils/emailService.js';
+import { sendEmail } from '../services/emailService.js';
 
 export const sendOtp = async (req, res) => {
     try {
         const { email } = req.body;
+        const normalizedEmail = email?.trim().toLowerCase();
 
-        if (!email) {
+        if (!normalizedEmail) {
             return res.status(400).json({ error: 'Email is required' });
         }
 
@@ -30,13 +30,13 @@ export const sendOtp = async (req, res) => {
         const hashedOtp = await bcrypt.hash(otp, salt);
 
         // Save to DB (overwrite existing OTP for this email)
-        await Otp.deleteMany({ email }); // Delete any existing OTPs for this email
-        const newOtp = new Otp({ email, otp: hashedOtp });
+        await Otp.deleteMany({ email: normalizedEmail }); // Delete any existing OTPs for this email
+        const newOtp = new Otp({ email: normalizedEmail, otp: hashedOtp });
         await newOtp.save();
 
         // Send Email
         await sendEmail(
-            email,
+            normalizedEmail,
             'Your Verification OTP',
             `Your OTP is: ${otp}`,
             `<p>Your OTP is: <strong>${otp}</strong></p><p>This OTP is valid for 5 minutes.</p>`
@@ -45,20 +45,23 @@ export const sendOtp = async (req, res) => {
         res.status(200).json({ message: 'OTP sent successfully' });
     } catch (error) {
         console.error('Error sending OTP:', error);
-        res.status(500).json({ error: 'Failed to send OTP' });
+        res.status(500).json({
+            error: error?.message || 'Failed to send OTP'
+        });
     }
 };
 
 export const verifyOtp = async (req, res) => {
     try {
         const { email, otp } = req.body;
+        const normalizedEmail = email?.trim().toLowerCase();
 
-        if (!email || !otp) {
+        if (!normalizedEmail || !otp) {
             return res.status(400).json({ error: 'Email and OTP are required' });
         }
 
         // Find the most recent OTP for this email
-        const otpRecord = await Otp.findOne({ email }).sort({ createdAt: -1 });
+        const otpRecord = await Otp.findOne({ email: normalizedEmail }).sort({ createdAt: -1 });
 
         if (!otpRecord) {
             return res.status(400).json({ error: 'Invalid or expired OTP' });

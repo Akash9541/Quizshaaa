@@ -1,18 +1,21 @@
 import User from '../models/User.js';
 import jwt from 'jsonwebtoken';
 import dotenv from 'dotenv';
-import { sendEmail } from '../utils/emailService.js';
+import { generateOtp, sendEmail } from '../services/emailService.js';
 dotenv.config();
 
 const sendVerificationEmail = async (to, subject, html) => {
     await sendEmail(to, subject, 'Your OTP for Quizshaala verification', html);
 };
 
+const getClientSafeEmailError = (error, fallbackMessage) => error?.message || fallbackMessage;
+
 export const signup = async (req, res) => {
     try {
         const { email, password, name } = req.body;
+        const normalizedEmail = email?.trim().toLowerCase();
 
-        if (!email || !password || !name) {
+        if (!normalizedEmail || !password || !name) {
             return res.status(400).json({ error: 'All fields are required' });
         }
 
@@ -20,12 +23,12 @@ export const signup = async (req, res) => {
             return res.status(400).json({ error: 'Password must be at least 6 characters long' });
         }
 
-        const existingUser = await User.findOne({ email });
+        const existingUser = await User.findOne({ email: normalizedEmail });
 
         if (existingUser) {
             if (!existingUser.isVerified) {
-                // User exists but NOT verified → resend OTP
-                const otp = Math.floor(100000 + Math.random() * 900000).toString();
+                // User exists but NOT verified, resend OTP.
+                const otp = generateOtp();
                 const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
 
                 existingUser.otp = otp;
@@ -33,7 +36,7 @@ export const signup = async (req, res) => {
                 await existingUser.save();
 
                 await sendVerificationEmail(
-                    email,
+                    normalizedEmail,
                     "Quizshaala Email Verification",
                     `
             <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -56,12 +59,12 @@ export const signup = async (req, res) => {
         }
 
         // Generate OTP
-        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const otp = generateOtp();
         const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
 
         // Create user with OTP (not verified yet)
         const user = new User({
-            email,
+            email: normalizedEmail,
             password,
             name,
             otp,
@@ -71,10 +74,10 @@ export const signup = async (req, res) => {
 
         await user.save();
 
-        // Send OTP email using Nodemailer
+        // Send OTP email via SMTP.
         try {
             await sendVerificationEmail(
-                email,
+                normalizedEmail,
                 "Quizshaala Email Verification",
                 `
           <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -100,7 +103,9 @@ export const signup = async (req, res) => {
             console.error('Email sending error:', emailError);
             // Delete the user if email fails
             await User.findByIdAndDelete(user._id);
-            return res.status(500).json({ error: 'Failed to send verification email' });
+            return res.status(500).json({
+                error: getClientSafeEmailError(emailError, 'Failed to send verification email')
+            });
         }
     } catch (error) {
         console.error('Signup error:', error);
@@ -111,12 +116,13 @@ export const signup = async (req, res) => {
 export const verifyOtp = async (req, res) => {
     try {
         const { email, otp } = req.body;
+        const normalizedEmail = email?.trim().toLowerCase();
 
-        if (!email || !otp) {
+        if (!normalizedEmail || !otp) {
             return res.status(400).json({ error: 'Email and OTP are required' });
         }
 
-        const user = await User.findOne({ email });
+        const user = await User.findOne({ email: normalizedEmail });
         if (!user) {
             return res.status(404).json({ error: 'User not found' });
         }
@@ -163,12 +169,13 @@ export const verifyOtp = async (req, res) => {
 export const resendOtp = async (req, res) => {
     try {
         const { email } = req.body;
+        const normalizedEmail = email?.trim().toLowerCase();
 
-        if (!email) {
+        if (!normalizedEmail) {
             return res.status(400).json({ error: 'Email is required' });
         }
 
-        const user = await User.findOne({ email });
+        const user = await User.findOne({ email: normalizedEmail });
         if (!user) {
             return res.status(404).json({ error: 'User not found' });
         }
@@ -184,7 +191,7 @@ export const resendOtp = async (req, res) => {
         }
 
         // Generate new OTP
-        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const otp = generateOtp();
         const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
 
         // Update user with new OTP
@@ -192,10 +199,10 @@ export const resendOtp = async (req, res) => {
         user.otpExpires = otpExpires;
         await user.save();
 
-        // Send new OTP email using Nodemailer
+        // Send new OTP email via SMTP.
         try {
             await sendVerificationEmail(
-                email,
+                normalizedEmail,
                 "Quizshaala New Verification OTP",
                 `
           <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -216,10 +223,12 @@ export const resendOtp = async (req, res) => {
             res.json({ message: 'New OTP sent to your email' });
         } catch (emailError) {
             console.error('Email sending error:', emailError);
-            return res.status(500).json({ error: 'Failed to send OTP email' });
+            return res.status(500).json({
+                error: getClientSafeEmailError(emailError, 'Failed to send OTP email')
+            });
         }
     } catch (error) {
-        console.error('Resend OTP error:', error);
+        console.error('OTP resend route error:', error);
         res.status(500).json({ error: 'Internal server error' });
     }
 };
@@ -227,12 +236,13 @@ export const resendOtp = async (req, res) => {
 export const login = async (req, res) => {
     try {
         const { email, password } = req.body || {};
+        const normalizedEmail = email?.trim().toLowerCase();
 
-        if (!email || !password) {
+        if (!normalizedEmail || !password) {
             return res.status(400).json({ error: 'email and password are required' });
         }
 
-        const user = await User.findOne({ email });
+        const user = await User.findOne({ email: normalizedEmail });
         if (!user) {
             return res.status(401).json({ error: 'Invalid email or password' });
         }
@@ -330,7 +340,7 @@ export const contactParams = async (req, res) => {
 
     try {
         await sendEmail(
-            process.env.CONTACT_TO_EMAIL || process.env.EMAIL_USER,
+            process.env.CONTACT_TO_EMAIL || process.env.EMAIL_FROM,
             `New Contact Form Submission from ${name}`,
             message,
             `<p><strong>Name:</strong> ${name}</p>
