@@ -74,7 +74,7 @@ export const signup = async (req, res) => {
 
         await user.save();
 
-        // Send OTP email via SMTP.
+        // Send OTP email via Brevo HTTP API.
         try {
             await sendVerificationEmail(
                 normalizedEmail,
@@ -199,7 +199,7 @@ export const resendOtp = async (req, res) => {
         user.otpExpires = otpExpires;
         await user.save();
 
-        // Send new OTP email via SMTP.
+        // Send new OTP email via Brevo HTTP API.
         try {
             await sendVerificationEmail(
                 normalizedEmail,

@@ -12,6 +12,6 @@ const sendEmailLimiter = rateLimit({
     message: { error: 'Too many email requests. Please try again later.' }
 });
 
-router.post('/send-email', sendEmailLimiter, sendEmailOtp);
+router.post('/send-otp', sendEmailLimiter, sendEmailOtp);
 
 export default router;

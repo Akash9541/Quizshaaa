@@ -1,4 +1,4 @@
-import { sendOtpEmail } from '../services/emailService.js';
+import { generateOtp, sendOTPEmail } from '../services/emailService.js';
 
 const isValidEmail = (email = '') => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
@@ -14,7 +14,8 @@ export const sendEmailOtp = async (req, res) => {
             return res.status(400).json({ error: 'Please provide a valid email address' });
         }
 
-        const { otp, messageId } = await sendOtpEmail(email, 'User');
+        const otp = generateOtp();
+        const { messageId } = await sendOTPEmail(email, otp);
 
         const response = {
             message: 'OTP email sent successfully',

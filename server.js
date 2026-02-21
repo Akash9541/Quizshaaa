@@ -12,7 +12,7 @@ import authRoutes from './routes/authRoutes.js';
 import quizRoutes from './routes/quizRoutes.js';
 import otpRoutes from './routes/otpRoutes.js';
 import emailRoutes from './routes/emailRoutes.js';
-import { verifyEmailTransport } from './services/emailService.js';
+import { verifyBrevoConfig } from './services/emailService.js';
 
 // Load Environment Variables
 dotenv.config();
@@ -81,9 +81,9 @@ app.use(session({
 // Connect to Database
 connectDB();
 
-verifyEmailTransport()
-  .then(() => console.log('Email transporter is ready'))
-  .catch((error) => console.warn(`Email transporter unavailable: ${error.message}`));
+verifyBrevoConfig()
+  .then(() => console.log('Brevo email config is ready'))
+  .catch((error) => console.warn(`Brevo email config unavailable: ${error.message}`));
 
 // Rate Limiting
 const limiter = rateLimit({
@@ -99,7 +99,7 @@ app.use(limiter);
 app.use('/api', authRoutes);
 app.use('/api', quizRoutes);
 app.use('/api', otpRoutes);
-app.use('/api', emailRoutes);
+app.use('/api/auth', emailRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => res.json({
