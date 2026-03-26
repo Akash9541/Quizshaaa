@@ -1,38 +1,38 @@
 import QuizHistory from '../models/QuizHistory.js';
+import { getHybridQuestions } from '../services/questionGenerationService.js';
+import { normalizeDifficulty, normalizeTopic } from '../utils/quizTopics.js';
 
-const VALID_TOPICS = new Set([
-    'Logical Reasoning',
-    'Coding & Problem-Solving',
-    'Quantitative Aptitude',
-    'CS Fundamentals',
-    'Verbal & Communication',
-    'Mock Tests & Assessments'
-]);
+export const getQuizQuestions = async (req, res) => {
+    try {
+        const { topic, difficulty = 'medium', limit = 5 } = req.query;
+        const normalizedTopic = normalizeTopic(topic);
+        const normalizedDifficulty = normalizeDifficulty(difficulty);
 
-const TOPIC_ALIASES = {
-    'logical reasoning quiz': 'Logical Reasoning',
-    'logical reasoning': 'Logical Reasoning',
-    'coding & problem-solving': 'Coding & Problem-Solving',
-    'coding and problem-solving': 'Coding & Problem-Solving',
-    'quantitative aptitude quiz': 'Quantitative Aptitude',
-    'quantitative aptitude': 'Quantitative Aptitude',
-    'cs fundamentals quiz': 'CS Fundamentals',
-    'cs fundamentals': 'CS Fundamentals',
-    'verbal ability': 'Verbal & Communication',
-    'verbal & communication': 'Verbal & Communication',
-    'mock test': 'Mock Tests & Assessments',
-    'mock tests & assessments': 'Mock Tests & Assessments'
-};
+        if (!normalizedTopic) {
+            return res.status(400).json({ error: 'Invalid topic' });
+        }
 
-const normalizeTopic = (value) => {
-    if (!value || typeof value !== 'string') {
-        return null;
+        if (!normalizedDifficulty) {
+            return res.status(400).json({ error: 'Invalid difficulty' });
+        }
+
+        const result = await getHybridQuestions({
+            topic: normalizedTopic,
+            difficulty: normalizedDifficulty,
+            limit
+        });
+
+        res.json({
+            topic: normalizedTopic,
+            difficulty: normalizedDifficulty,
+            source: result.source,
+            fallbackReason: result.fallbackReason,
+            questions: result.questions
+        });
+    } catch (error) {
+        console.error('Quiz generation error:', error);
+        res.status(500).json({ error: 'Failed to generate quiz questions' });
     }
-    if (VALID_TOPICS.has(value)) {
-        return value;
-    }
-    const normalizedKey = value.trim().toLowerCase();
-    return TOPIC_ALIASES[normalizedKey] || null;
 };
 
 export const saveQuizHistory = async (req, res) => {
@@ -175,4 +175,4 @@ export const getUserStats = async (req, res) => { // Added handler for /stats
         console.error("User stats error:", error);
         res.status(500).json({ error: "Failed to load user stats" });
     }
-}
+};
