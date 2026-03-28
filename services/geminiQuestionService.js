@@ -1,4 +1,5 @@
 import { getGeminiModel, getGeminiModelCandidates } from './gemini.js';
+import { logger } from './logger.js';
 import { registerGeminiCooldown, scheduleGeminiRequest } from './geminiScheduler.js';
 import { normalizeDifficulty, normalizeTopic } from '../utils/quizTopics.js';
 
@@ -182,7 +183,7 @@ export const generateQuestionsWithGemini = async ({ topic, difficulty = 'medium'
                     const coordinatedDelayMs = retryDelayMs + jitterMs;
 
                     registerGeminiCooldown(coordinatedDelayMs);
-                    console.warn(
+                    logger.warn(
                         `Gemini quota/rate limit hit for "${modelName}". Coordinated retry in ${coordinatedDelayMs}ms ` +
                         `(base ${retryDelayMs}ms + jitter ${jitterMs}ms, attempt ${attempt + 1}/${DEFAULT_MAX_429_RETRIES}).`
                     );

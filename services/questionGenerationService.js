@@ -2,10 +2,13 @@ import mongoose from 'mongoose';
 
 import GeneratedQuestion from '../models/GeneratedQuestion.js';
 import { SEED_QUESTION_BANK } from '../data/seedQuestions.js';
+import { getCachedJson, setCachedJson } from './cacheService.js';
 import { generateQuestionsWithGemini } from './geminiQuestionService.js';
+import { logger } from './logger.js';
 import { normalizeDifficulty, normalizeTopic } from '../utils/quizTopics.js';
 
 const inFlightHybridQuestionRequests = new Map();
+const QUESTION_CACHE_TTL_SECONDS = 10 * 60;
 
 const shuffle = (items) => [...items].sort(() => Math.random() - 0.5);
 
@@ -53,7 +56,7 @@ const saveGeneratedQuestions = async (questions) => {
             ordered: false
         });
     } catch (error) {
-        console.warn(`Generated question persistence skipped: ${error.message}`);
+        logger.warn(`Generated question persistence skipped: ${error.message}`);
     }
 };
 
@@ -133,7 +136,7 @@ const buildHybridQuestions = async ({ topic, difficulty = 'medium', limit = 5 })
                 });
             } catch (error) {
                 fallbackReason = error.message;
-                console.warn(`Gemini generation failed: ${error.message}`);
+                logger.warn(`Gemini generation failed: ${error.message}`);
             }
         }
     }
@@ -180,6 +183,12 @@ export const getHybridQuestions = async ({ topic, difficulty = 'medium', limit =
         throw new Error('Invalid difficulty');
     }
 
+    const cacheKey = `questions:${normalizedTopic}:${normalizedDifficulty}:${normalizedLimit}`;
+    const cachedPayload = await getCachedJson(cacheKey);
+    if (cachedPayload) {
+        return cachedPayload;
+    }
+
     const requestKey = buildRequestKey({
         topic: normalizedTopic,
         difficulty: normalizedDifficulty,
@@ -199,7 +208,9 @@ export const getHybridQuestions = async ({ topic, difficulty = 'medium', limit =
     inFlightHybridQuestionRequests.set(requestKey, requestPromise);
 
     try {
-        return await requestPromise;
+        const result = await requestPromise;
+        await setCachedJson(cacheKey, result, QUESTION_CACHE_TTL_SECONDS);
+        return result;
     } finally {
         if (inFlightHybridQuestionRequests.get(requestKey) === requestPromise) {
             inFlightHybridQuestionRequests.delete(requestKey);

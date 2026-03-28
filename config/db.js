@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { logger } from '../services/logger.js';
 
 const connectDB = async () => {
     try {
@@ -13,28 +14,27 @@ const connectDB = async () => {
         }
 
         mongoose.set('strictQuery', true);
-        await mongoose.connect(process.env.MONGO_URI);
-        console.log('Connected to MongoDB');
+        await mongoose.connect(process.env.MONGO_URI, {
+            serverSelectionTimeoutMS: 5000
+        });
+        logger.info('Connected to MongoDB');
         return true;
     } catch (err) {
-        console.error('MongoDB connection error:', err.message);
+        logger.error(`MongoDB connection error: ${err.message}`);
 
         // Provide helpful error messages
         if (err.message.includes('ENOTFOUND')) {
-            console.error('   This usually means:');
-            console.error('   1. Your MongoDB server is not running');
-            console.error('   2. Your connection string has incorrect hostname/port');
-            console.error('   3. Your network connection is down');
+            logger.error('MongoDB hostname could not be resolved. Check that MongoDB is running and the host/port are correct.');
         } else if (err.message.includes('auth failed')) {
-            console.error('   Authentication failed - check your username/password');
+            logger.error('MongoDB authentication failed. Check your username and password.');
         } else if (err.message.includes('Invalid MONGO_URI')) {
-            console.error('   Please check your MONGO_URI in the .env file');
+            logger.error('Please check your MONGO_URI in the .env file.');
         }
 
         const allowWithoutDb = process.env.REQUIRE_DB_ON_START !== 'true';
 
         if (allowWithoutDb) {
-            console.warn('Starting server without MongoDB connection (limited functionality).');
+            logger.warn('Starting server without MongoDB connection (limited functionality).');
             return false;
         }
 

@@ -1,10 +1,13 @@
 import crypto from 'node:crypto';
 import SibApiV3Sdk from 'sib-api-v3-sdk';
 import dotenv from 'dotenv';
+import { logger } from './logger.js';
 
 dotenv.config();
 
 const OTP_EXPIRATION_MINUTES = Number(process.env.OTP_EXPIRATION_MINUTES || 10);
+const getBrevoApiKey = () => process.env.BREVO_API_KEY?.trim();
+const getEmailFrom = () => process.env.EMAIL_FROM?.trim();
 
 const parseSender = (emailFrom) => {
     const fallback = { name: 'Quizshaala', email: emailFrom };
@@ -16,14 +19,14 @@ const parseSender = (emailFrom) => {
 };
 
 const assertEmailConfig = () => {
-    if (!process.env.BREVO_API_KEY || !process.env.EMAIL_FROM) {
+    if (!getBrevoApiKey() || !getEmailFrom()) {
         throw new Error('Email service is not configured. Set BREVO_API_KEY and EMAIL_FROM.');
     }
 };
 
 const getTransactionalApi = () => {
     const apiClient = SibApiV3Sdk.ApiClient.instance;
-    apiClient.authentications['api-key'].apiKey = process.env.BREVO_API_KEY;
+    apiClient.authentications['api-key'].apiKey = getBrevoApiKey();
     return new SibApiV3Sdk.TransactionalEmailsApi();
 };
 
@@ -52,8 +55,8 @@ export const sendEmail = async (to, subject, text, html) => {
         const emailApi = getTransactionalApi();
         const payload = new SibApiV3Sdk.SendSmtpEmail();
 
-        payload.sender = parseSender(process.env.EMAIL_FROM);
-        payload.to = [{ email: to }];
+        payload.sender = parseSender(getEmailFrom());
+        payload.to = [{ email: to?.trim()?.toLowerCase() }];
         payload.subject = subject;
         payload.textContent = text;
         payload.htmlContent = html;
@@ -67,7 +70,7 @@ export const sendEmail = async (to, subject, text, html) => {
             responseBody: error?.response?.body || error?.body,
             stack: error?.stack,
         };
-        console.error('Brevo sendEmail error:', details);
+        logger.error('Brevo sendEmail error', details);
         throw new Error('Failed to send email via Brevo API');
     }
 };

@@ -1,4 +1,5 @@
 import { generateOtp, sendOTPEmail } from '../services/emailService.js';
+import { logger } from '../services/logger.js';
 
 const isValidEmail = (email = '') => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
@@ -29,7 +30,7 @@ export const sendEmailOtp = async (req, res) => {
 
         return res.status(200).json(response);
     } catch (error) {
-        console.error('sendEmailOtp error:', error);
+        logger.error('sendEmailOtp error', { error: error.message });
         const status = error.message.includes('not configured') ? 500 : 502;
         return res.status(status).json({
             error: 'Failed to send OTP email',

@@ -1,7 +1,9 @@
 import otpGenerator from 'otp-generator';
 import bcrypt from 'bcryptjs';
 import Otp from '../models/Otp.js';
+import User from '../models/User.js';
 import { sendEmail } from '../services/emailService.js';
+import { logger } from '../services/logger.js';
 
 export const sendOtp = async (req, res) => {
     try {
@@ -12,11 +14,10 @@ export const sendOtp = async (req, res) => {
             return res.status(400).json({ error: 'Email is required' });
         }
 
-        // Check if user already exists (optional, depending on flow)
-        // const user = await User.findOne({ email });
-        // if (user) {
-        //   return res.status(400).json({ error: 'User already exists' });
-        // }
+        const user = await User.findOne({ email: normalizedEmail });
+        if (!user) {
+            return res.status(404).json({ error: 'No account found with this email' });
+        }
 
         // Generate OTP
         const otp = otpGenerator.generate(6, {
@@ -37,14 +38,14 @@ export const sendOtp = async (req, res) => {
         // Send Email
         await sendEmail(
             normalizedEmail,
-            'Your Verification OTP',
-            `Your OTP is: ${otp}`,
-            `<p>Your OTP is: <strong>${otp}</strong></p><p>This OTP is valid for 5 minutes.</p>`
+            'Your Quizshaala password reset OTP',
+            `Your Quizshaala password reset OTP is: ${otp}`,
+            `<p>Your Quizshaala password reset OTP is: <strong>${otp}</strong></p><p>This OTP is valid for 5 minutes.</p>`
         );
 
         res.status(200).json({ message: 'OTP sent successfully' });
     } catch (error) {
-        console.error('Error sending OTP:', error);
+        logger.error('Error sending OTP', { error: error.message });
         res.status(500).json({
             error: error?.message || 'Failed to send OTP'
         });
@@ -74,24 +75,57 @@ export const verifyOtp = async (req, res) => {
             return res.status(400).json({ error: 'Invalid OTP' });
         }
 
-        // OTP is valid - delete it so it can't be reused
-        await Otp.deleteOne({ _id: otpRecord._id });
-
-        // Mark user as verified or update some other state if needed?
-        // For now we just return success, frontend can proceed to next step (e.g. registration or password reset)
-        // If this is for email verification during signup, we might want to update the user record here or return a token.
-        // Assuming this is part of a signup flow or a standalone verification step.
-
-        // You might want to update the User model verification status here if used for signup
-        // const user = await User.findOne({ email });
-        // if (user) {
-        //   user.isVerified = true;
-        //   await user.save();
-        // }
-
         res.status(200).json({ message: 'OTP verified successfully' });
     } catch (error) {
-        console.error('Error verifying OTP:', error);
+        logger.error('Error verifying OTP', { error: error.message });
         res.status(500).json({ error: 'Failed to verify OTP' });
+    }
+};
+
+export const resetPassword = async (req, res) => {
+    try {
+        const { email, otp, password } = req.body;
+        const normalizedEmail = email?.trim().toLowerCase();
+
+        if (!normalizedEmail || !otp || !password) {
+            return res.status(400).json({ error: 'Email, OTP, and new password are required' });
+        }
+
+        if (password.length < 6) {
+            return res.status(400).json({ error: 'Password must be at least 6 characters long' });
+        }
+
+        const [user, otpRecord] = await Promise.all([
+            User.findOne({ email: normalizedEmail }),
+            Otp.findOne({ email: normalizedEmail }).sort({ createdAt: -1 })
+        ]);
+
+        if (!user) {
+            return res.status(404).json({ error: 'No account found with this email' });
+        }
+
+        if (!otpRecord) {
+            return res.status(400).json({ error: 'Invalid or expired OTP' });
+        }
+
+        const isValidOtp = await bcrypt.compare(otp, otpRecord.otp);
+        if (!isValidOtp) {
+            return res.status(400).json({ error: 'Invalid OTP' });
+        }
+
+        user.password = password;
+        user.refreshToken = null;
+        user.loginAttempts = 0;
+        user.lockUntil = null;
+
+        await Promise.all([
+            user.save(),
+            Otp.deleteMany({ email: normalizedEmail })
+        ]);
+
+        res.status(200).json({ message: 'Password reset successfully. Please log in with your new password.' });
+    } catch (error) {
+        logger.error('Reset password error', { error: error.message });
+        res.status(500).json({ error: 'Failed to reset password' });
     }
 };

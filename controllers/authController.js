@@ -2,6 +2,7 @@ import User from '../models/User.js';
 import jwt from 'jsonwebtoken';
 import dotenv from 'dotenv';
 import { generateOtp, sendEmail } from '../services/emailService.js';
+import { logger } from '../services/logger.js';
 dotenv.config();
 
 const sendVerificationEmail = async (to, subject, html) => {
@@ -100,7 +101,7 @@ export const signup = async (req, res) => {
                 userId: user._id
             });
         } catch (emailError) {
-            console.error('Email sending error:', emailError);
+            logger.error('Email sending error', { error: emailError.message });
             // Delete the user if email fails
             await User.findByIdAndDelete(user._id);
             return res.status(500).json({
@@ -108,7 +109,7 @@ export const signup = async (req, res) => {
             });
         }
     } catch (error) {
-        console.error('Signup error:', error);
+        logger.error('Signup error', { error: error.message });
         res.status(500).json({ error: 'Internal server error' });
     }
 };
@@ -161,7 +162,7 @@ export const verifyOtp = async (req, res) => {
             refreshToken
         });
     } catch (error) {
-        console.error('OTP verification error:', error);
+        logger.error('OTP verification error', { error: error.message });
         res.status(500).json({ error: 'Internal server error' });
     }
 };
@@ -222,13 +223,13 @@ export const resendOtp = async (req, res) => {
 
             res.json({ message: 'New OTP sent to your email' });
         } catch (emailError) {
-            console.error('Email sending error:', emailError);
+            logger.error('Email sending error', { error: emailError.message });
             return res.status(500).json({
                 error: getClientSafeEmailError(emailError, 'Failed to send OTP email')
             });
         }
     } catch (error) {
-        console.error('OTP resend route error:', error);
+        logger.error('OTP resend route error', { error: error.message });
         res.status(500).json({ error: 'Internal server error' });
     }
 };
@@ -273,7 +274,7 @@ export const login = async (req, res) => {
             refreshToken
         });
     } catch (error) {
-        console.error('Login error:', error);
+        logger.error('Login error', { error: error.message });
         if (error.message.includes('Account is temporarily locked')) {
             return res.status(423).json({ error: error.message });
         }
@@ -300,7 +301,7 @@ export const refreshToken = async (req, res) => {
             refreshToken: newRefreshToken
         });
     } catch (error) {
-        console.error('Refresh token error:', error);
+        logger.error('Refresh token error', { error: error.message });
         res.status(403).json({ error: 'Invalid refresh token' });
     }
 };
@@ -310,7 +311,7 @@ export const logout = async (req, res) => {
         await User.findByIdAndUpdate(req.user.userId, { refreshToken: null });
         res.json({ message: 'Logged out successfully' });
     } catch (error) {
-        console.error('Logout error:', error);
+        logger.error('Logout error', { error: error.message });
         res.status(500).json({ error: 'Internal server error' });
     }
 };
@@ -330,7 +331,7 @@ export const getProfile = async (req, res) => {
             }
         });
     } catch (error) {
-        console.error('Get profile error:', error);
+        logger.error('Get profile error', { error: error.message });
         res.status(500).json({ error: 'Internal server error' });
     }
 };
@@ -349,7 +350,7 @@ export const contactParams = async (req, res) => {
         );
         res.status(200).json({ message: 'Email sent successfully' });
     } catch (error) {
-        console.error(error);
+        logger.error('Contact email error', { error: error.message });
         res.status(500).json({ message: 'Email failed', error });
     }
 };

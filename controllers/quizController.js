@@ -1,6 +1,19 @@
 import QuizHistory from '../models/QuizHistory.js';
+import { deleteCacheKey, getCachedJson, setCachedJson } from '../services/cacheService.js';
 import { getHybridQuestions } from '../services/questionGenerationService.js';
+import { enqueueQuizResultProcessing } from '../services/quizQueue.js';
+import { emitTopicLeaderboardUpdate } from '../services/socketServer.js';
+import { buildDashboardStats, buildLeaderboard, buildRecentQuizzes, buildUserStats } from '../services/statsService.js';
+import { buildLiveRoomDiagnostics, getActiveTimedRooms, getIndexedLiveRooms } from '../services/liveSessionStore.js';
+import { logger } from '../services/logger.js';
+import { isRedisReady } from '../services/redisClient.js';
+import { getSocketServerStatus } from '../services/socketServer.js';
 import { normalizeDifficulty, normalizeTopic } from '../utils/quizTopics.js';
+
+const DASHBOARD_CACHE_TTL_SECONDS = 5 * 60;
+const LEADERBOARD_CACHE_TTL_SECONDS = 2 * 60;
+const RECENT_QUIZZES_CACHE_TTL_SECONDS = 5 * 60;
+const USER_STATS_CACHE_TTL_SECONDS = 5 * 60;
 
 export const getQuizQuestions = async (req, res) => {
     try {
@@ -30,7 +43,7 @@ export const getQuizQuestions = async (req, res) => {
             questions: result.questions
         });
     } catch (error) {
-        console.error('Quiz generation error:', error);
+        logger.error('Quiz generation error', { error: error.message });
         res.status(500).json({ error: 'Failed to generate quiz questions' });
     }
 };
@@ -56,9 +69,34 @@ export const saveQuizHistory = async (req, res) => {
             totalQuestions: numericTotal
         });
         await history.save();
+
+        await Promise.all([
+            deleteCacheKey(`dashboard:${req.user.userId}`),
+            deleteCacheKey(`recent-quizzes:${req.user.userId}`),
+            deleteCacheKey(`user-stats:${req.user.userId}`),
+            deleteCacheKey(`leaderboard:${normalizedTopic}`)
+        ]);
+
+        try {
+            await enqueueQuizResultProcessing({
+                userId: req.user.userId,
+                topic: normalizedTopic
+            });
+        } catch (queueError) {
+            logger.warn(`Quiz queue enqueue skipped: ${queueError.message}`);
+        }
+
+        emitTopicLeaderboardUpdate(normalizedTopic, {
+            userName: req.user.name,
+            score: numericScore,
+            totalQuestions: numericTotal
+        }).catch((socketError) => {
+            logger.warn(`Realtime leaderboard emit skipped: ${socketError.message}`);
+        });
+
         res.status(201).json({ message: "History saved", history });
     } catch (error) {
-        console.error("Save history error:", error);
+        logger.error('Save history error', { error: error.message });
         res.status(500).json({ error: "Failed to save history" });
     }
 };
@@ -68,7 +106,7 @@ export const getQuizHistory = async (req, res) => {
         const history = await QuizHistory.find({ userId: req.user.userId }).sort({ dateTaken: -1 });
         res.json(history);
     } catch (error) {
-        console.error("Fetch history error:", error);
+        logger.error('Fetch history error', { error: error.message });
         res.status(500).json({ error: 'Failed to fetch history' });
     }
 };
@@ -78,17 +116,17 @@ export const getLeaderboard = async (req, res) => {
     const normalizedTopic = normalizeTopic(topic);
     if (!normalizedTopic) return res.status(400).json({ error: "Invalid topic" });
     try {
-        const leaderboard = await QuizHistory.aggregate([
-            { $match: { topic: normalizedTopic } },
-            { $lookup: { from: "users", localField: "userId", foreignField: "_id", as: "user" } },
-            { $unwind: "$user" },
-            { $project: { _id: 1, score: 1, totalQuestions: 1, percentage: 1, dateTaken: 1, username: "$user.name" } },
-            { $sort: { score: -1, percentage: -1, dateTaken: 1 } },
-            { $limit: 50 }
-        ]);
+        const cacheKey = `leaderboard:${normalizedTopic}`;
+        const cachedLeaderboard = await getCachedJson(cacheKey);
+        if (cachedLeaderboard) {
+            return res.json(cachedLeaderboard);
+        }
+
+        const leaderboard = await buildLeaderboard(normalizedTopic);
+        await setCachedJson(cacheKey, leaderboard, LEADERBOARD_CACHE_TTL_SECONDS);
         res.json(leaderboard);
     } catch (error) {
-        console.error("Leaderboard error:", error);
+        logger.error('Leaderboard error', { error: error.message });
         res.status(500).json({ error: "Failed to load leaderboard" });
     }
 };
@@ -96,36 +134,17 @@ export const getLeaderboard = async (req, res) => {
 export const getDashboardStats = async (req, res) => {
     try {
         const userId = req.user.userId;
-        const history = await QuizHistory.find({ userId });
-        if (history.length === 0) return res.json({
-            totalQuizzes: 0,
-            bestScore: 0,
-            averageScore: 0,
-            topics: [],
-            completionRate: 0
-        });
+        const cacheKey = `dashboard:${userId}`;
+        const cachedDashboard = await getCachedJson(cacheKey);
+        if (cachedDashboard) {
+            return res.json(cachedDashboard);
+        }
 
-        const totalQuizzes = history.length;
-        const bestScore = Math.max(...history.map(h => h.score));
-        const totalPossible = history.reduce((sum, h) => sum + h.totalQuestions, 0);
-        const totalCorrect = history.reduce((sum, h) => sum + h.score, 0);
-        const averageScore = Math.round((totalCorrect / totalPossible) * 100);
-        const topics = [...new Set(history.map(h => h.topic))];
-        const badges = [];
-        if (bestScore >= 45) badges.push("Quiz Master");
-        if (averageScore >= 80) badges.push("Top Performer");
-        if (totalQuizzes >= 10) badges.push("Marathon Learner");
-
-        res.json({
-            totalQuizzes,
-            bestScore,
-            averageScore,
-            topics,
-            badges,
-            lastActivity: history[0]?.dateTaken
-        });
+        const dashboard = await buildDashboardStats(userId);
+        await setCachedJson(cacheKey, dashboard, DASHBOARD_CACHE_TTL_SECONDS);
+        res.json(dashboard);
     } catch (error) {
-        console.error("Dashboard error:", error);
+        logger.error('Dashboard error', { error: error.message });
         res.status(500).json({ error: "Failed to load dashboard" });
     }
 };
@@ -133,19 +152,17 @@ export const getDashboardStats = async (req, res) => {
 export const getRecentQuizzes = async (req, res) => { // Added missing endpoint
     try {
         const userId = req.user.userId;
-        const history = await QuizHistory.find({ userId }).sort({ dateTaken: -1 }).limit(5);
+        const cacheKey = `recent-quizzes:${userId}`;
+        const cachedRecentQuizzes = await getCachedJson(cacheKey);
+        if (cachedRecentQuizzes) {
+            return res.json(cachedRecentQuizzes);
+        }
 
-        const quizzes = history.map(h => ({
-            category: h.topic,
-            date: h.dateTaken,
-            score: h.percentage,
-            correctAnswers: h.correctAnswers,
-            totalQuestions: h.totalQuestions
-        }));
-
-        res.json({ quizzes });
+        const recentQuizzes = await buildRecentQuizzes(userId);
+        await setCachedJson(cacheKey, recentQuizzes, RECENT_QUIZZES_CACHE_TTL_SECONDS);
+        res.json(recentQuizzes);
     } catch (error) {
-        console.error("Recent quizzes error:", error);
+        logger.error('Recent quizzes error', { error: error.message });
         res.status(500).json({ error: "Failed to load recent quizzes" });
     }
 };
@@ -153,26 +170,49 @@ export const getRecentQuizzes = async (req, res) => { // Added missing endpoint
 export const getUserStats = async (req, res) => { // Added handler for /stats
     try {
         const userId = req.user.userId;
-        const history = await QuizHistory.find({ userId });
-        if (history.length === 0) return res.json({
-            quizzesCompleted: 0,
-            averageScore: 0,
-            totalPoints: 0
-        });
+        const cacheKey = `user-stats:${userId}`;
+        const cachedUserStats = await getCachedJson(cacheKey);
+        if (cachedUserStats) {
+            return res.json(cachedUserStats);
+        }
 
-        const quizzesCompleted = history.length;
-        const totalPossible = history.reduce((sum, h) => sum + h.totalQuestions, 0);
-        const totalCorrect = history.reduce((sum, h) => sum + h.score, 0);
-        const averageScore = Math.round((totalCorrect / totalPossible) * 100);
-        const totalPoints = totalCorrect * 10; // Assuming 10 points per correct answer
+        const userStats = await buildUserStats(userId);
+        await setCachedJson(cacheKey, userStats, USER_STATS_CACHE_TTL_SECONDS);
+        res.json(userStats);
+    } catch (error) {
+        logger.error('User stats error', { error: error.message });
+        res.status(500).json({ error: "Failed to load user stats" });
+    }
+};
+
+export const getLiveRoomsHealth = async (req, res) => {
+    try {
+        const [indexedRooms, timedRooms] = await Promise.all([
+            getIndexedLiveRooms(),
+            getActiveTimedRooms()
+        ]);
+
+        const rooms = await Promise.all(indexedRooms.map((roomId) => buildLiveRoomDiagnostics(roomId)));
+        const activeRooms = rooms.filter(Boolean);
 
         res.json({
-            quizzesCompleted,
-            averageScore,
-            totalPoints
+            timestamp: new Date().toISOString(),
+            requestedBy: {
+                userId: req.user.userId,
+                name: req.user.name
+            },
+            services: {
+                redis: isRedisReady() ? 'connected' : 'disconnected',
+                socket: getSocketServerStatus()
+            },
+            liveRooms: {
+                indexedCount: indexedRooms.length,
+                timedCount: timedRooms.length,
+                rooms: activeRooms
+            }
         });
     } catch (error) {
-        console.error("User stats error:", error);
-        res.status(500).json({ error: "Failed to load user stats" });
+        logger.error('Live room health error', { error: error.message });
+        res.status(500).json({ error: 'Failed to load live room diagnostics' });
     }
 };
