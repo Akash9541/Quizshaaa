@@ -17,9 +17,10 @@ const USER_STATS_CACHE_TTL_SECONDS = 5 * 60;
 
 export const getQuizQuestions = async (req, res) => {
     try {
-        const { topic, difficulty = 'medium', limit = 5 } = req.query;
+        const { topic, difficulty = 'medium', limit = 5, ai, useAi } = req.query;
         const normalizedTopic = normalizeTopic(topic);
         const normalizedDifficulty = normalizeDifficulty(difficulty);
+        const preferAi = ai === 'true' || useAi === 'true';
 
         if (!normalizedTopic) {
             return res.status(400).json({ error: 'Invalid topic' });
@@ -32,12 +33,14 @@ export const getQuizQuestions = async (req, res) => {
         const result = await getHybridQuestions({
             topic: normalizedTopic,
             difficulty: normalizedDifficulty,
-            limit
+            limit,
+            preferAi
         });
 
         res.json({
             topic: normalizedTopic,
             difficulty: normalizedDifficulty,
+            preferAi,
             source: result.source,
             fallbackReason: result.fallbackReason,
             questions: result.questions

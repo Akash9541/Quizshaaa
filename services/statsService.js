@@ -16,23 +16,27 @@ export const buildDashboardStats = async (userId) => {
     }
 
     const totalQuizzes = history.length;
-    const bestScore = Math.max(...history.map((item) => item.score));
+    const bestScore = Math.max(...history.map((item) => item.percentage || 0));
     const totalPossible = history.reduce((sum, item) => sum + item.totalQuestions, 0);
     const totalCorrect = history.reduce((sum, item) => sum + item.score, 0);
+    const totalAnswered = history.reduce((sum, item) => (
+        sum + (item.correctAnswers ?? item.score) + (item.incorrectAnswers ?? Math.max(item.totalQuestions - item.score, 0))
+    ), 0);
     const averageScore = totalPossible ? Math.round((totalCorrect / totalPossible) * 100) : 0;
     const topics = [...new Set(history.map((item) => item.topic))];
     const badges = [];
 
-    if (bestScore >= 45) badges.push('Quiz Master');
+    if (bestScore >= 90) badges.push('Quiz Master');
     if (averageScore >= 80) badges.push('Top Performer');
     if (totalQuizzes >= 10) badges.push('Marathon Learner');
+    if (topics.length >= 4) badges.push('All-Rounder');
 
     return {
         totalQuizzes,
         bestScore,
         averageScore,
         topics,
-        completionRate: 100,
+        completionRate: totalPossible ? Math.round((totalAnswered / totalPossible) * 100) : 0,
         badges,
         lastActivity: history[0]?.dateTaken || null
     };

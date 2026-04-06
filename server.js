@@ -13,7 +13,6 @@ import connectDB from './config/db.js';
 import authRoutes from './routes/authRoutes.js';
 import quizRoutes from './routes/quizRoutes.js';
 import otpRoutes from './routes/otpRoutes.js';
-import emailRoutes from './routes/emailRoutes.js';
 import { verifyBrevoConfig } from './services/emailService.js';
 import { initializeQuizQueue } from './services/quizQueue.js';
 import { logger, requestLogger } from './services/logger.js';
@@ -95,7 +94,6 @@ app.use(apiLimiter);
 app.use('/api', authRoutes);
 app.use('/api', quizRoutes);
 app.use('/api', otpRoutes);
-app.use('/api/auth', emailRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {

@@ -90,9 +90,11 @@ const formatQuestionsForResponse = (questions) => questions.map((question) => ({
     source: question.source
 }));
 
-const buildRequestKey = ({ topic, difficulty, limit }) => `${topic}::${difficulty}::${limit}`;
+const buildRequestKey = ({ topic, difficulty, limit, preferAi = false }) => (
+    `${topic}::${difficulty}::${limit}::${preferAi ? 'ai' : 'hybrid'}`
+);
 
-const buildHybridQuestions = async ({ topic, difficulty = 'medium', limit = 5 }) => {
+const buildHybridQuestions = async ({ topic, difficulty = 'medium', limit = 5, preferAi = false }) => {
     const normalizedTopic = normalizeTopic(topic);
     const normalizedDifficulty = normalizeDifficulty(difficulty);
     const normalizedLimit = Math.max(3, Math.min(Number(limit) || 5, 10));
@@ -105,26 +107,54 @@ const buildHybridQuestions = async ({ topic, difficulty = 'medium', limit = 5 })
         throw new Error('Invalid difficulty');
     }
 
-    const cachedQuestions = await loadQuestionsFromDatabase({
+    let fallbackReason = '';
+    let cachedQuestions = [];
+    let aiQuestions = [];
+
+    if (preferAi) {
+        if (!process.env.GEMINI_API_KEY) {
+            fallbackReason = 'GEMINI_API_KEY is not loaded in the backend process. Restart the backend after updating backend/.env.';
+        } else {
+            try {
+                aiQuestions = await generateQuestionsWithGemini({
+                    topic: normalizedTopic,
+                    difficulty: normalizedDifficulty,
+                    limit: normalizedLimit
+                });
+            } catch (error) {
+                fallbackReason = error.message;
+                logger.warn(`Gemini-first generation failed: ${error.message}`);
+            }
+        }
+
+        if (aiQuestions.length >= normalizedLimit) {
+            return {
+                source: 'ai',
+                fallbackReason,
+                questions: formatQuestionsForResponse(aiQuestions.slice(0, normalizedLimit))
+            };
+        }
+    }
+
+    cachedQuestions = await loadQuestionsFromDatabase({
         topic: normalizedTopic,
         difficulty: normalizedDifficulty,
         limit: normalizedLimit
     });
 
-    let fallbackReason = '';
-
     if (cachedQuestions.length >= normalizedLimit) {
         return {
-            source: 'database',
+            source: preferAi && aiQuestions.length ? 'ai+database' : 'database',
             fallbackReason,
-            questions: formatQuestionsForResponse(cachedQuestions)
+            questions: formatQuestionsForResponse(
+                uniqueByQuestion([...aiQuestions, ...cachedQuestions]).slice(0, normalizedLimit)
+            )
         };
     }
 
-    const missingCount = normalizedLimit - cachedQuestions.length;
-    let aiQuestions = [];
+    const missingCount = normalizedLimit - uniqueByQuestion([...aiQuestions, ...cachedQuestions]).length;
 
-    if (missingCount > 0) {
+    if (missingCount > 0 && !preferAi) {
         if (!process.env.GEMINI_API_KEY) {
             fallbackReason = 'GEMINI_API_KEY is not loaded in the backend process. Restart the backend after updating backend/.env.';
         } else {
@@ -151,14 +181,14 @@ const buildHybridQuestions = async ({ topic, difficulty = 'medium', limit = 5 })
         limit: normalizedLimit
     });
 
-    const mergedQuestions = uniqueByQuestion([
-        ...cachedQuestions,
-        ...aiQuestions,
-        ...seedQuestions
-    ]).slice(0, normalizedLimit);
+    const mergedQuestions = uniqueByQuestion(
+        preferAi
+            ? [...aiQuestions, ...cachedQuestions, ...seedQuestions]
+            : [...cachedQuestions, ...aiQuestions, ...seedQuestions]
+    ).slice(0, normalizedLimit);
 
     const source = aiQuestions.length
-        ? 'ai'
+        ? (preferAi ? 'ai+fallback' : 'ai')
         : cachedQuestions.length
             ? 'database+seed'
             : 'seed';
@@ -170,7 +200,7 @@ const buildHybridQuestions = async ({ topic, difficulty = 'medium', limit = 5 })
     };
 };
 
-export const getHybridQuestions = async ({ topic, difficulty = 'medium', limit = 5 }) => {
+export const getHybridQuestions = async ({ topic, difficulty = 'medium', limit = 5, preferAi = false }) => {
     const normalizedTopic = normalizeTopic(topic);
     const normalizedDifficulty = normalizeDifficulty(difficulty);
     const normalizedLimit = Math.max(3, Math.min(Number(limit) || 5, 10));
@@ -183,7 +213,7 @@ export const getHybridQuestions = async ({ topic, difficulty = 'medium', limit =
         throw new Error('Invalid difficulty');
     }
 
-    const cacheKey = `questions:${normalizedTopic}:${normalizedDifficulty}:${normalizedLimit}`;
+    const cacheKey = `questions:${normalizedTopic}:${normalizedDifficulty}:${normalizedLimit}:${preferAi ? 'ai' : 'hybrid'}`;
     const cachedPayload = await getCachedJson(cacheKey);
     if (cachedPayload) {
         return cachedPayload;
@@ -192,7 +222,8 @@ export const getHybridQuestions = async ({ topic, difficulty = 'medium', limit =
     const requestKey = buildRequestKey({
         topic: normalizedTopic,
         difficulty: normalizedDifficulty,
-        limit: normalizedLimit
+        limit: normalizedLimit,
+        preferAi
     });
 
     if (inFlightHybridQuestionRequests.has(requestKey)) {
@@ -202,7 +233,8 @@ export const getHybridQuestions = async ({ topic, difficulty = 'medium', limit =
     const requestPromise = buildHybridQuestions({
         topic: normalizedTopic,
         difficulty: normalizedDifficulty,
-        limit: normalizedLimit
+        limit: normalizedLimit,
+        preferAi
     });
 
     inFlightHybridQuestionRequests.set(requestKey, requestPromise);

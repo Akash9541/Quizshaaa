@@ -5,11 +5,63 @@ import { generateOtp, sendEmail } from '../services/emailService.js';
 import { logger } from '../services/logger.js';
 dotenv.config();
 
+const REFRESH_COOKIE_NAME = 'quizshaala_refresh_token';
+const REFRESH_COOKIE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
 const sendVerificationEmail = async (to, subject, html) => {
     await sendEmail(to, subject, 'Your OTP for Quizshaala verification', html);
 };
 
 const getClientSafeEmailError = (error, fallbackMessage) => error?.message || fallbackMessage;
+
+const parseCookies = (cookieHeader = '') => cookieHeader
+    .split(';')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .reduce((accumulator, entry) => {
+        const separatorIndex = entry.indexOf('=');
+        if (separatorIndex === -1) {
+            return accumulator;
+        }
+
+        const key = entry.slice(0, separatorIndex).trim();
+        const value = decodeURIComponent(entry.slice(separatorIndex + 1).trim());
+        accumulator[key] = value;
+        return accumulator;
+    }, {});
+
+const buildRefreshCookieOptions = (persistSession = true) => {
+    const isProduction = process.env.NODE_ENV === 'production';
+
+    const options = {
+        httpOnly: true,
+        secure: isProduction,
+        sameSite: isProduction ? 'none' : 'lax',
+        path: '/'
+    };
+
+    if (persistSession) {
+        options.maxAge = REFRESH_COOKIE_MAX_AGE_MS;
+    }
+
+    return options;
+};
+
+const setRefreshTokenCookie = (res, refreshToken, persistSession = true) => {
+    res.cookie(REFRESH_COOKIE_NAME, refreshToken, buildRefreshCookieOptions(persistSession));
+};
+
+const clearRefreshTokenCookie = (res) => {
+    res.clearCookie(REFRESH_COOKIE_NAME, {
+        ...buildRefreshCookieOptions(false),
+        maxAge: undefined
+    });
+};
+
+const getRefreshTokenFromRequest = (req) => {
+    const cookies = parseCookies(req.headers?.cookie || '');
+    return cookies[REFRESH_COOKIE_NAME] || req.body?.refreshToken || null;
+};
 
 export const signup = async (req, res) => {
     try {
@@ -149,6 +201,7 @@ export const verifyOtp = async (req, res) => {
         const { accessToken, refreshToken } = user.generateTokens();
         user.refreshToken = refreshToken;
         await user.save();
+        setRefreshTokenCookie(res, refreshToken);
 
         res.json({
             message: 'Email verified successfully. Registration complete!',
@@ -236,7 +289,7 @@ export const resendOtp = async (req, res) => {
 
 export const login = async (req, res) => {
     try {
-        const { email, password } = req.body || {};
+        const { email, password, rememberMe } = req.body || {};
         const normalizedEmail = email?.trim().toLowerCase();
 
         if (!normalizedEmail || !password) {
@@ -261,6 +314,7 @@ export const login = async (req, res) => {
         const { accessToken, refreshToken } = user.generateTokens();
         user.refreshToken = refreshToken;
         await user.save();
+        setRefreshTokenCookie(res, refreshToken, Boolean(rememberMe));
 
         res.json({
             message: 'Login successful',
@@ -284,7 +338,8 @@ export const login = async (req, res) => {
 
 export const refreshToken = async (req, res) => {
     try {
-        const { refreshToken } = req.body;
+        const refreshToken = getRefreshTokenFromRequest(req);
+        const persistSession = req.body?.rememberMe !== false;
         if (!refreshToken) {
             return res.status(401).json({ error: 'Refresh token required' });
         }
@@ -296,6 +351,7 @@ export const refreshToken = async (req, res) => {
         const { accessToken, refreshToken: newRefreshToken } = user.generateTokens();
         user.refreshToken = newRefreshToken;
         await user.save();
+        setRefreshTokenCookie(res, newRefreshToken, persistSession);
         res.json({
             accessToken,
             refreshToken: newRefreshToken
@@ -309,6 +365,7 @@ export const refreshToken = async (req, res) => {
 export const logout = async (req, res) => {
     try {
         await User.findByIdAndUpdate(req.user.userId, { refreshToken: null });
+        clearRefreshTokenCookie(res);
         res.json({ message: 'Logged out successfully' });
     } catch (error) {
         logger.error('Logout error', { error: error.message });
@@ -351,6 +408,6 @@ export const contactParams = async (req, res) => {
         res.status(200).json({ message: 'Email sent successfully' });
     } catch (error) {
         logger.error('Contact email error', { error: error.message });
-        res.status(500).json({ message: 'Email failed', error });
+        res.status(500).json({ error: 'Email failed' });
     }
 };
